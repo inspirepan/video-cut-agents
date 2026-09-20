@@ -1,0 +1,1471 @@
+{
+  "branches": [
+    {
+      "id": "music",
+      "title": "本地 BGM 与音频设计",
+      "tag": "shared",
+      "summary": "从本地曲库选曲、测节拍网格、卡点，再混音保住原声可懂度。",
+      "goal": "长视频成片要一条不抢戏的音乐轨。这一步解决三件事：离线选曲、拍点对齐、音乐与语音的响度冲突，且全程可复现、可审计。",
+      "inputs": [
+        "剪辑脚本 / edit_decisions",
+        "本地曲库目录与 meta.json",
+        "词级 transcript 与语音区间",
+        "已锁定的画面时间线"
+      ],
+      "outputs": [
+        "选中曲目条目（id/path/bpm/beats）",
+        "beat_data.json：bpm/t0/T/beats/hits/rms/sections",
+        "music_edit_plan：卡点帧表 + analysisRef",
+        "混音后成片音轨 + rights ledger 记录"
+      ],
+      "interview": "BGM 只垫底、不卡点。语音永远优先，说话时音乐下潜 2–6 dB，禁用有歌词曲目。",
+      "sports": "现场声与解说是主体，音乐只进集锦段。得分/关键回合可钉在真实鼓点上。",
+      "mg": "音乐先行：节拍网格没验收通过就不设计分镜。BGM 压到约 0.34 给 SFX 留 headroom，并从同一时间线出带/无 BGM 两版。",
+      "atomic": [
+        {
+          "name": "曲库语义召回",
+          "impl": "all-MiniLM-L6-v2 + FAISS，top_n=32",
+          "note": "只嵌入 description 字段；召回后再做 tag 硬过滤，最后交 LLM 选一首"
+        },
+        {
+          "name": "节拍网格测定",
+          "impl": "librosa beat_track + 最小二乘拟合 / Beat This ONNX",
+          "note": "输出 bpm、t0、T、beats[]；残差 ≤ ±15ms 才算网格可信"
+        },
+        {
+          "name": "强拍筛选",
+          "impl": "FireRed _compute_accent_beats",
+          "note": "percussive onset → 8 拍窗局部归一化 → top 70% → 局部峰 → 最小间隔抑制"
+        },
+        {
+          "name": "卡点计划与提交",
+          "impl": "OpenChatCut music_edit_plan → sync_cuts_to_music",
+          "note": "只读出计划，执行时按 analysisRef 校验 stale，一次 EditorCommands.batch 一次 undo"
+        },
+        {
+          "name": "侧链闪避与响度",
+          "impl": "ffmpeg sidechaincompress + 两遍 loudnorm",
+          "note": "EQ 挖 1.5 kHz 坑在前，闪避只压 2–6 dB；响度只在最后一步设一次"
+        },
+        {
+          "name": "授权台账",
+          "impl": "ledger.jsonl / .credit.json sidecar",
+          "note": "每个音频文件记 licence、来源 URL、SHA-256；未清权的成片只能报 review_rights"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "beat_track 的 tempo 标量不可信",
+          "detail": "librosa 返回的 tempo 实测偏差 2%+（129.2 vs 真值 131.97），但 beat 时刻序列本身是好的。对整段序列做最小二乘等距拟合 t_i=t0+i*T 反算 BPM。",
+          "source": "video-shotcraft/references/music-beat-sync.md:39"
+        },
+        {
+          "title": "半倍/双倍 BPM 歧义",
+          "detail": "beat 检测常在 2x/0.5x 之间跳（70 报成 140）。判据不是听感：正确网格下 kick 应主要落整数拍；对 0.5x/1x/2x 三个候选各算覆盖率分数再选。",
+          "source": "video-shotcraft/references/music-beat-sync.md:53"
+        },
+        {
+          "title": "重闪避把音乐压没",
+          "detail": "高 ratio 侧链把音乐压向静音，成品里音乐读作噪声。正确做法是先用 equalizer 在 1.5 kHz 挖 −3…−5 dB 的人声坑，闪避只做 2–6 dB。",
+          "source": "chatmonteur/skills/references/final-render-and-audio.md:26"
+        },
+        {
+          "title": "amix 默认把人声除以 N",
+          "detail": "amix 不带 normalize=0 会把每路除以 1/N，实测人声从 −19 dB 掉到 −31 dB。所有 amix 必须写 normalize=0。",
+          "source": "chatmonteur/skills/references/final-render-and-audio.md:57"
+        },
+        {
+          "title": "画面没锁就做声音",
+          "detail": "画面每改一次，SFX/卡点钉帧表就要全表重对。实测有一轮把换 BGM 和画面重做混在一起，画面继续改后 SFX 全表报废。声音必须排在画面锁定之后。",
+          "source": "video-shotcraft/references/sound-design.md:26"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "FireRed-OpenStoryline",
+          "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/select_bgm.py",
+          "line": 45,
+          "why": "召回→过滤→LLM 选一首→librosa 出特征的完整实现"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/music-intelligence/SKILL.md",
+          "line": 11,
+          "why": "Beat This+CLAP 本地分析与卡点工具的调用契约"
+        },
+        {
+          "repo": "video-shotcraft",
+          "path": "video-shotcraft/references/music-beat-sync.md",
+          "line": 1,
+          "why": "从曲子到切点误差 ≤3 帧的可复现卡点方法论"
+        },
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/skills/references/final-render-and-audio.md",
+          "line": 24,
+          "why": "EQ 坑 + 温和闪避 + 混音电平的实测定稿参数"
+        },
+        {
+          "repo": "video-edit-cli",
+          "path": "video-edit-cli/src/video_editor/audio/mastering.py",
+          "line": 17,
+          "why": "两遍 loudnorm 的确定性实现与默认目标值"
+        }
+      ],
+      "children": [
+        {
+          "id": "music-library",
+          "title": "本地曲库索引",
+          "tag": "shared",
+          "summary": "把目录里的音频变成可过滤、可向量召回的结构化条目。",
+          "goal": "Agent 听不了音频。必须先把每首曲子变成带标签和描述文本的条目，语义召回与硬条件过滤才有基础。",
+          "inputs": [
+            "本地 BGM 目录 bgm_dir"
+          ],
+          "outputs": [
+            "meta.json：List[Dict]，含 id/path/description/mood/scene/genre/lang",
+            "FAISS 向量库",
+            "ledger.jsonl 授权与 SHA-256"
+          ],
+          "atomic": [
+            {
+              "name": "条目表 meta.json",
+              "impl": "ElementFilter(json_path=f\"{bgm_dir}/meta.json\")",
+              "note": "必须是 list of dict，否则直接抛 ValueError；include 用 AND、同维度多值用 OR"
+            },
+            {
+              "name": "标签枚举",
+              "impl": "SelectBGMInput.filter_include",
+              "note": "mood 9 值、scene 12 值、genre 10 值、lang 5 值（bgm/en/zh/ko/ja）、id 精确指定"
+            },
+            {
+              "name": "向量库构建",
+              "impl": "HuggingFaceEmbeddings + FAISS.from_documents",
+              "note": "模型先找 ./.storyline/models/all-MiniLM-L6-v2，缺失回落 sentence-transformers 官方权重，device=cpu"
+            },
+            {
+              "name": "授权台账",
+              "impl": "assets/sound/ledger.jsonl",
+              "note": "licence + SHA-256 是每个内置文件的权威；user/ 本地投放目录优先级最高且不入版本库"
+            }
+          ],
+          "interview": "访谈曲库要标 vocal=instrumental。有歌词的曲子一律排除，人声会和说话打架。",
+          "sports": "赛事曲库要有 usage=sports、mood=energetic 的高能段落，并标注可循环。",
+          "pitfalls": [
+            {
+              "title": "description 为空建不出库",
+              "detail": "build_vectorstore 只嵌入 description 字段，全空时打印一行日志并返回 None，整条召回链静默失效。入库脚本必须强制写描述文本。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/utils/recall.py:42"
+            },
+            {
+              "title": "过滤为空会随机兜底",
+              "detail": "ElementFilter.filter 结果为空时 random.sample 抽 10 首返回。用户的硬条件（例如无歌词）被静默丢弃。要么 fallback_n=0，要么自己判空报错。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/utils/element_filter.py:80"
+            },
+            {
+              "title": "批量下载丢失来源",
+              "detail": "Mixkit 等站批量下载后 metadata 常被抹掉，事后无法反查曲名与授权，商用前必须复核。下载当时就把曲名/URL 写进条目。",
+              "source": "video-shotcraft/references/sound-design.md:52"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/utils/element_filter.py",
+              "line": 50,
+              "why": "include/exclude 过滤与随机兜底的实现"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/utils/recall.py",
+              "line": 7,
+              "why": "本地 embedding 建 FAISS 库的最小实现"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/node_schema.py",
+              "line": 323,
+              "why": "mood/scene/genre/lang 四个标签维度的取值枚举"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/sound.md",
+              "line": 14,
+              "why": "曲库目录结构与 ledger.jsonl 授权权威"
+            }
+          ]
+        },
+        {
+          "id": "music-pick",
+          "title": "语义选曲与硬过滤",
+          "tag": "shared",
+          "summary": "向量召回 32 首 → 标签硬过滤 → LLM 只返回一条 JSON。",
+          "goal": "用户意图是自然语言（激情、有鼓点），但 BPM 范围、无歌词这类硬条件不能交给 LLM 判断。要分成召回、过滤、择一三段。",
+          "inputs": [
+            "user_request 自然语言",
+            "filter_include / filter_exclude",
+            "FAISS 向量库"
+          ],
+          "outputs": [
+            "选中条目 {id, path, ...}"
+          ],
+          "atomic": [
+            {
+              "name": "全量召回",
+              "impl": "StorylineRecall.query_top_n(k=32)",
+              "note": "similarity_search 返回 doc.metadata 原始 dict，保留全部字段供后续过滤"
+            },
+            {
+              "name": "硬条件过滤",
+              "impl": "ElementFilter include/exclude",
+              "note": "BPM 区间、lang=bgm（无歌词）这类硬条件在这里过滤，不进 prompt"
+            },
+            {
+              "name": "LLM 择一",
+              "impl": "temperature=0.1, top_p=0.9, max_tokens=2048",
+              "note": "system prompt 只说一句：返回最适合的有且只有一条 JSON"
+            },
+            {
+              "name": "解析降级",
+              "impl": "parse_json_dict + 首条兜底",
+              "note": "解析失败或结果无 path 字段时直接取 candidates[0]，避免整条链路挂掉"
+            }
+          ],
+          "interview": "选曲判据是不抢戏：低瞬态的 pad/ambient，能量曲线平，允许长时间铺底。",
+          "sports": "选强鼓点电子底（tech-house 类），能量曲线要能托住集锦的推进结构。",
+          "pitfalls": [
+            {
+              "title": "单听曲子选型不可靠",
+              "detail": "实测三易其稿：v1→v2 只隔 22 分钟就被否，根因是选曲时没在成片语境里听。候选曲必须垫进成片试听后再定。",
+              "source": "video-shotcraft/references/sound-design.md:40"
+            },
+            {
+              "title": "静音选项必须显式记录",
+              "detail": "OpenMontage 把 music_plan 设为强制字段，source 只有在用户明确 opt-out 并写下说明时才能是 none，否则 review 不通过。默认无音乐会被当成漏做。",
+              "source": "OpenMontage/pipeline_defs/documentary-montage.yaml:57"
+            },
+            {
+              "title": "选一次就固化成频道主题",
+              "detail": "一次搜索出来的曲子被当成常驻品牌音是错的。要按 brand 的 sound.json 分三支：已批准默认、custom_sections、no_music，并把选择写回 PLAN.md。",
+              "source": "chatmonteur/skills/sound.md:32"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/select_bgm.py",
+              "line": 62,
+              "why": "召回→过滤→LLM→降级四步的完整 recommend"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/prompts/tasks/select_bgm/zh/system.md",
+              "line": 1,
+              "why": "选曲 prompt 的硬规则：只返回一条 JSON"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/sound.md",
+              "line": 22,
+              "why": "选曲铁律：绝不用带人声的曲子"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/sound-design.md",
+              "line": 42,
+              "why": "从用户原话反推的选型判据"
+            }
+          ]
+        },
+        {
+          "id": "music-analysis",
+          "title": "音乐结构分析",
+          "tag": "shared",
+          "summary": "测 BPM、beat、downbeat、能量与段落，产出可审计的分析产物。",
+          "goal": "卡点、段落编排、音乐进出场都依赖同一份时间事实。这份事实必须是浮点秒、留档、可复算，不能在管线里被反复取整。",
+          "inputs": [
+            "选中曲目音频文件"
+          ],
+          "outputs": [
+            "beat_data.json：bpm/t0/T/beats/hits[{t,s,k}]/rms/sections",
+            "grid_drift.json：各候选网格的 match/误差/漂移与获胜理由"
+          ],
+          "atomic": [
+            {
+              "name": "轻量特征（librosa）",
+              "impl": "sr=22050, hop=2048, frame=2048",
+              "note": "onset_strength → beat_track → RMS；dynamic_range_db 取 p95−p10，energy 用 amplitude_to_db"
+            },
+            {
+              "name": "强拍局部归一化",
+              "impl": "_compute_accent_beats",
+              "note": "percussive onset，8 拍窗均值归一，top_pct=70，require_local_peak，min_sep_beats=1，输出毫秒整数"
+            },
+            {
+              "name": "神经节拍（Beat This）",
+              "impl": "ONNX，22050 Hz / n_fft 1024 / hop 441 / 128 mel",
+              "note": "chunk 1500 帧、border 6 帧；峰值半径 3、去重宽 2；WebGPU 优先，>128 MB 或失败回落 WASM"
+            },
+            {
+              "name": "BPM 与拍号推导",
+              "impl": "estimateBpm / estimateMeter",
+              "note": "beat 间隔去 IQR 1.5 倍离群后取中位数；拍号按相邻 downbeat 之间的 beat 数取中位，钳在 1–12"
+            },
+            {
+              "name": "段落切分",
+              "impl": "deriveMusicSections（energy-change-v1）",
+              "note": "每拍 RMS 归一 → 前后 3 拍均值差 → 阈值 clamp(0.12,0.3)；最短段 4000 ms，最多 12 段"
+            },
+            {
+              "name": "语义标签（CLAP）",
+              "impl": "clap-prototypes.json，4 类各 8 标签",
+              "note": "genre/mood/instrument/usage；余弦分 <0.2 记 unknown；512 维 embedding 只留缓存，绝不进 LLM 上下文"
+            }
+          ],
+          "interview": "访谈只需能量曲线和段落边界，用来决定音乐进出场，不需要逐拍 downbeat。",
+          "sports": "赛事集锦要 downbeat 与 peak 段，用来把得分镜头钉在小节头上。",
+          "pitfalls": [
+            {
+              "title": "复杂编曲鼓点被埋",
+              "detail": "人声/贝斯厚的曲子会把鼓的攻击埋掉，beat_track 和 onset 都会漂。先用 librosa.effects.hpss 取打击成分，仍不干净时用 Demucs --two-stems=drums 分离鼓轨，后续全部在 drums.wav 上测。",
+              "source": "video-shotcraft/references/music-beat-sync.md:58"
+            },
+            {
+              "title": "命中表被当触发器",
+              "detail": "tech-house 类曲子几乎每拍都有 kick，逐个 kick 配画面冲击就变成镜头随节奏抖动（真实用户投诉）。kick 表只是候选池，全片冲击 ≤3 处。",
+              "source": "video-shotcraft/references/music-beat-sync.md:93"
+            },
+            {
+              "title": "提前取整让误差滚雪球",
+              "detail": "分析全程必须记浮点秒，换算成帧只发生在进渲染器的最后一步。beat_data.json 里的时刻永远不预取整。",
+              "source": "video-shotcraft/references/music-beat-sync.md:25"
+            },
+            {
+              "title": "曲子太短直接抛错",
+              "detail": "librosa 路径在 y.size < frame_length 时抛 RuntimeError；音频读不了会回落 ffmpeg 转 wav 再读，ffmpeg 缺失才最终失败。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/select_bgm.py:125"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/select_bgm.py",
+              "line": 220,
+              "why": "强拍局部归一化与峰值筛选的全部参数"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/audio/intelligence/beatThisPreprocess.ts",
+              "line": 1,
+              "why": "Beat This 前处理常量：采样率/hop/mel/chunk"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/audio/intelligence/beatThisClient.ts",
+              "line": 132,
+              "why": "BPM 去离群、拍号中位、置信度加权公式"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/audio/intelligence/sections.ts",
+              "line": 19,
+              "why": "能量变化分段的阈值、最短段长与角色判定"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/music-beat-sync.md",
+              "line": 114,
+              "why": "网格验收四指标：match≥98%、误差<10ms、漂移<5ms"
+            }
+          ]
+        },
+        {
+          "id": "music-beatsync",
+          "title": "卡点计划与提交",
+          "tag": "shared",
+          "summary": "把拍点变成只读计划，校验后一次提交为单步 undo。",
+          "goal": "卡点会批量改时间线，必须可预览、可回滚。计划与执行分离，执行时重算并校验分析是否过期。",
+          "inputs": [
+            "beat_data.json / 缓存分析",
+            "BGM 片段的 trim 与倍速映射",
+            "重叠的视频片段 id"
+          ],
+          "outputs": [
+            "music_edit_plan：cutFrames[]、targetItemIds[]、analysisRef",
+            "对齐后的片段时长表"
+          ],
+          "atomic": [
+            {
+              "name": "只读计划",
+              "impl": "music_edit_plan(itemId, timing, density)",
+              "note": "timing=auto/beat/downbeat/section；上限 96 个切点、64 个目标；返回不透明 analysisRef"
+            },
+            {
+              "name": "密度映射",
+              "impl": "sparse/medium/dense",
+              "note": "分别取每 4/2/1 个候选点；auto 下 sparse 走 section→downbeat→beat，dense 反过来"
+            },
+            {
+              "name": "stale 校验与提交",
+              "impl": "sync_cuts_to_music(analysisRef)",
+              "note": "执行时按当前状态重算，不重放旧帧号；锁定轨道跳过并报告；全部 split 合成一个 EditorCommands.batch"
+            },
+            {
+              "name": "时长对齐拍格",
+              "impl": "edit_meterial_durations_beats",
+              "note": "按 beats_durations 累加逼近素材时长，不足 min_clip_duration=1000ms 就继续吃拍；曲子不够长自动循环并告警"
+            },
+            {
+              "name": "拍号常量化",
+              "impl": "beatT(n)=SOURCE_BEAT0+OFFSET+n*BEAT_INT",
+              "note": "镜头边界写 beatF(整数拍)，换曲只改两个常量；SFX 与画面共用同一事实源"
+            }
+          ],
+          "interview": "卡点是软约束。访谈以语义完整为先，句子不能为了对拍被切断。",
+          "sports": "得分/庆祝可以硬卡在 downbeat，但回放段落要让位给现场解说的完整句子。",
+          "mg": "卡点是硬约束：渲后回测每个切点误差 ≤3f 才算过。但全画面级冲击全片 ≤3 处、间隔 ≥16 拍，逐拍打画面会读作抖动。",
+          "pitfalls": [
+            {
+              "title": "重音钉在半拍上",
+              "detail": "实测把最大 slam 钉在 b52.5，而最强 kick 在整数拍 b52，渲后偏差 +5.75 帧。强鼓点曲重音几乎总在整数拍，半拍钉点必须有 env 数据支持。",
+              "source": "video-shotcraft/references/music-beat-sync.md:110"
+            },
+            {
+              "title": "稀疏重音用网格插值",
+              "detail": "密集规则切点可以用网格 beatF(n)，但稀疏重音、孤立定格必须钉真实瞬态——网格的微小漂移会被单个重音放大成可感偏差。",
+              "source": "video-shotcraft/references/music-beat-sync.md:166"
+            },
+            {
+              "title": "计划直接改 BGM 本身",
+              "detail": "卡点计划只作用于与 BGM 区间重叠的视频片段，绝不能包含或改动 BGM 片段自己，否则音乐被切碎。",
+              "source": "OpenChatCut/src/agent/skills/music-intelligence/SKILL.md:35"
+            },
+            {
+              "title": "音乐不够长静默循环",
+              "detail": "beat_index 越界时会归零并只加一条 warning，成片里音乐会突然从头再来。要在计划阶段就判断时长并显式决定循环点或换曲。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/plan_timeline_pro.py:124"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/music-intelligence-tools.ts",
+              "line": 118,
+              "why": "只读计划与带 analysisRef 的执行工具签名"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/music-intelligence/SKILL.md",
+              "line": 30,
+              "why": "timing/density 的确定性映射与上限"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/plan_timeline_pro.py",
+              "line": 96,
+              "why": "按拍格重排素材时长的具体算法"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/music-beat-sync.md",
+              "line": 141,
+              "why": "时间线用拍号写不用帧号写的常量化模式"
+            }
+          ]
+        },
+        {
+          "id": "music-mix",
+          "title": "混音与原声保留",
+          "tag": "shared",
+          "summary": "EQ 挖坑加温和侧链，一次渲染出全部音轨，最后设一次响度。",
+          "goal": "音乐要听得见，语音要听得清。靠挖频率空间而不是压音量来分离，并且响度只在链路最后设一次。",
+          "inputs": [
+            "选中曲目 + 音量包络",
+            "原始语音/现场声轨",
+            "SFX 钉帧表"
+          ],
+          "outputs": [
+            "混音后成片音轨（-14 或 -16 LUFS）",
+            "响度测量报告"
+          ],
+          "atomic": [
+            {
+              "name": "人声坑 EQ",
+              "impl": "equalizer=f=1500:t=q:w=1.2:g=-4 + f=350:w=1.5:g=-3",
+              "note": "1–2 kHz 挖 −3…−5 dB 是分离的关键动作，350 Hz 去低中频浑浊"
+            },
+            {
+              "name": "侧链闪避",
+              "impl": "sidechaincompress=threshold=0.05:ratio=2:attack=20:release=700",
+              "note": "语音 asplit 出播放支与 key 支；压 2–6 dB，pad 类 2–4 dB、忙碌底 6–9 dB"
+            },
+            {
+              "name": "两遍响度归一",
+              "impl": "loudnorm print_format=json → measured_* + linear=true",
+              "note": "一遍 loudnorm 会边猜边骑增益；喂进测量值才变成线性平移"
+            },
+            {
+              "name": "电平分层",
+              "impl": "amix normalize=0:duration=first",
+              "note": "语音 −14 LUFS 时，忙碌底低 16–18 dB，pad 低 8–12 dB；SFX 重音绕过闪避"
+            },
+            {
+              "name": "J/L cut",
+              "impl": "上一场声音延伸 0.5–1.5 s",
+              "note": "只用在全片 3–4 个最难的接缝，用满了就变成糊"
+            },
+            {
+              "name": "静音作为乐器",
+              "impl": "情绪中心处整段掉音乐约 2 s",
+              "note": "全片只用一次；结尾另有 3–5 s 的 tail fade"
+            }
+          ],
+          "interview": "语音清晰度优先。BGM 首尾各 1s/1.7s 淡入淡出，铺底系数约 0.34，说话段必须闪避。",
+          "sports": "现场声与解说保留，音乐只在集锦段进入。哨声、欢呼这类重音绕过闪避，全电平混。",
+          "mg": "没有原声要保。重点在 SFX：volume 是乘法系数，按素材实测峰值给；峰值 <-12dB 的素材先换或预归一化再入库。",
+          "pitfalls": [
+            {
+              "title": "中途反复归一化",
+              "detail": "链路中间和结尾各做一次 loudnorm，台词会被过两遍动态压缩。响度只在最后一步设一次；中途要抬电平就用固定 gain 到 −1 dBFS。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:21"
+            },
+            {
+              "title": "两条音乐同时在响",
+              "detail": "背景底与 intro/insert/outro 叠在一起会互相打架。任何其他音乐播放时背景底必须为 0%，一次只有一条音乐轨。",
+              "source": "chatmonteur/skills/references/final-render-and-audio.md:108"
+            },
+            {
+              "title": "用安静的前奏铺底",
+              "detail": "cinematic 曲常有极轻的 ambient 开头，压在语音下面听起来就是噪声不是音乐。用 atrim / -ss 跳过前奏，取旋律段。",
+              "source": "chatmonteur/skills/references/final-render-and-audio.md:48"
+            },
+            {
+              "title": "volume 被当成目标音量",
+              "detail": "volume 是乘法系数不是目标电平。素材本身峰值 −24.6 dB 时给 1.0 仍是 −24.6 dB，照样被 BGM 盖住。首选换素材或预归一化。",
+              "source": "video-shotcraft/references/sound-design.md:217"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/references/final-render-and-audio.md",
+              "line": 97,
+              "why": "实测定稿的混音电平表与闪避参数"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/references/engineering-facts.md",
+              "line": 22,
+              "why": "两遍 loudnorm 与线性平移的原因说明"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/src/video_editor/audio/mastering.py",
+              "line": 17,
+              "why": "-16 LUFS / -1.5 dBTP / LRA 11 / 70 Hz 高通默认值"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/sound.md",
+              "line": 78,
+              "why": "L-cut 与静音的使用次数上限"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/docs/FLOW.md",
+              "line": 32,
+              "why": "社交交付目标 -14 LUFS / -1 dBTP / LRA 11，分章节不各自归一"
+            }
+          ]
+        },
+        {
+          "id": "music-rights",
+          "title": "版权与授权记录",
+          "tag": "shared",
+          "summary": "每个音频文件带授权 sidecar，未清权的成片不许标记可发布。",
+          "goal": "本地曲库里 CC0、CC-BY、平台条款混在一起。授权必须跟着资产走，并且成为交付前的一道状态门。",
+          "inputs": [
+            "选中曲目与其来源信息"
+          ],
+          "outputs": [
+            ".credit.json sidecar（provider/source URL/license）",
+            "ledger.jsonl 条目",
+            "QC 报告的 recommended_action"
+          ],
+          "atomic": [
+            {
+              "name": "credit sidecar",
+              "impl": "每个抓取资产一个 .credit.json",
+              "note": "记 provider、source URL、license；web 类目缺 license+source 直接被脚本拒收"
+            },
+            {
+              "name": "ledger 权威",
+              "impl": "assets/sound/ledger.jsonl",
+              "note": "licence 与 SHA-256 是内置文件的唯一权威，brand 的 default_background 通过 ledger_id 解析"
+            },
+            {
+              "name": "署名义务标记",
+              "impl": "attribution_required / noncommercial 字段",
+              "note": "CC-BY 意味着视频简介里要有一行署名；两个候选相当时优先 CC0"
+            },
+            {
+              "name": "状态门",
+              "impl": "qc 的 recommended_action",
+              "note": "技术通过但权利未清的内部母版只能报 review_rights，只有清权后才能报 ship"
+            }
+          ],
+          "interview": "访谈常含第三方素材与被访者肖像，授权记录要和音频分开但同样是发布前置。",
+          "sports": "赛事画面与现场音乐本身常有版权。BGM 清权不等于赛事素材清权，要分别记录。",
+          "pitfalls": [
+            {
+              "title": "技术合格被当成可发布",
+              "detail": "QC 只看黑帧、削波、时长这些技术项。技术健康但媒体权利未解决的母版必须停在 review_rights，不能直接判 ship。",
+              "source": "chatmonteur/docs/production-lifecycle.md:51"
+            },
+            {
+              "title": "平台条款当成开放授权",
+              "detail": "meme/gif 库的内容带的是平台 ToS 而不是开放许可，个人/社交用没问题，商用不行。sidecar 要如实记录这次调用的归属。",
+              "source": "llm-video-maker/skills/make-video/SKILL.md:263"
+            },
+            {
+              "title": "provenance 不进 review 清单",
+              "detail": "OpenMontage 把 provider/original_url/license 写进 asset 阶段的 review_focus，缺一条就过不了检查点。授权要做成流程字段而不是口头约定。",
+              "source": "OpenMontage/pipeline_defs/documentary-montage.yaml:109"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/SKILL.md",
+              "line": 263,
+              "why": ".credit.json sidecar 的字段与拒收规则"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/chatmonteur/tools/qc.py",
+              "line": 88,
+              "why": "review_rights / ship 的判定代码"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/docs/production-lifecycle.md",
+              "line": 51,
+              "why": "权利未清的母版不得标记 ship"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/pipeline_defs/documentary-montage.yaml",
+              "line": 109,
+              "why": "provenance 作为检查点的强制 review 项"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packaging",
+      "title": "字幕画幅与 MG 包装",
+      "tag": "shared",
+      "summary": "用真实词时序做字幕，按主体裁画幅，再叠 MG 图形并逐帧验收。",
+      "goal": "包装是成片给观众的第一印象，也是最容易出静默错误的一层。要把字幕、画幅、图形三件事都变成可校验的确定性产物。",
+      "inputs": [
+        "词级 transcript（绝对毫秒）",
+        "剪辑后的时间线与镜头边界",
+        "vision pass 的 analysis.json / safe-zones.json",
+        "品牌 brand profile 或 design system"
+      ],
+      "outputs": [
+        "单一可寻址的字幕 timeline（软字幕或烧录）",
+        "随时间变化的 crop path / vertical plan",
+        "MG 图形层（typed props）",
+        "lint + verify + 逐帧抽查报告"
+      ],
+      "interview": "字幕要带说话人与断句质量，画幅要保住人脸，图形以下三分之一为主。",
+      "sports": "要有比分卡/人物卡，裁切必须保住记分牌与场上 UI，字幕让位给解说。",
+      "mg": "包装即内容本身，没有底层素材可叠。字幕换成字卡与 kinetic type，画幅在 brief 里就定死，不做 reframe。",
+      "atomic": [
+        {
+          "name": "词级字幕分页",
+          "impl": "createTikTokStyleCaptions / segmenter",
+          "note": "按毫秒窗口合并成页；中文按字符单元预算（CJK=2、其他=1），不按词数"
+        },
+        {
+          "name": "安全区与遮挡计算",
+          "impl": "safe-zones.cjs / analysis.json",
+          "note": "输出 subjectBbox、faceBbox、negSpaceRect、brightness、hugLeft/hugRight 与 heroBands"
+        },
+        {
+          "name": "主体跟随裁切",
+          "impl": "auto_reframe → builtin:zoom 关键帧",
+          "note": "intervalFrames=15、sensitivity=0.5、smooth=0.45（EMA）、maxSamples=60"
+        },
+        {
+          "name": "镜头配方卡",
+          "impl": "video-shotcraft 157 张卡 + Remotion demo",
+          "note": "每卡记用途、能量、建议时长、参数表、已知坑与可复制实现"
+        },
+        {
+          "name": "编译式配方",
+          "impl": "open-edit RecipeGenerator.generate()",
+          "note": "generate(meta, wordTimings, {demote}) → {wv, manifest}，零 token、确定性、无运行时模型"
+        },
+        {
+          "name": "视觉 lint",
+          "impl": "lint-template.ts → --verify → probe-qa",
+          "note": "先机械 lint，再引擎重放绘制列表检 bounds/never-visible/occluded"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "有词时序却按整句淡入",
+          "detail": "实测一支 12 分钟片子磁盘上有 1872 个真实词时间戳，却只用来定每条字幕的进出，217 条字幕共用一个位置和一条 0.2s 淡入。字幕于是读作贴上去的字幕轨而不是片子的一部分。",
+          "source": "open-edit/pipeline/design/captions.ts:1"
+        },
+        {
+          "title": "把 cue 时长均分给词",
+          "detail": "任何用 cue 时长除以词数来推每个词时间的做法都会重新引入上游拒绝的均分错误。每个 delay 必须是转写里那个词自己的时间。",
+          "source": "open-edit/pipeline/design/captions.ts:68"
+        },
+        {
+          "title": "一个全局裁切遮住关键信息",
+          "detail": "横转竖时用一个全局裁切会切掉记分牌、比分、控件或演示内容。要按镜头/版式变化分段选裁切，说话人特写可居中 cover，含记分牌或 UI 的段落要更宽的处理。",
+          "source": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md:104"
+        },
+        {
+          "title": "verify 通过不等于能看",
+          "detail": "堆叠、粘连、幽灵叠字、浅底浅字、下沿裁切这几类失败对 --verify 完全不可见。配方必须在 ≥2 份不同词密度的内容上做逐帧眼检才算验收。",
+          "source": "open-edit/docs/recipe-format.md:134"
+        },
+        {
+          "title": "CSS 动画不可 seek",
+          "detail": "渲染器是按时间轴 seek 的，CSS keyframes 在预览里对、在渲染里错。光标和装饰动效要用时间轴 set，随机数要用有种子的 PRNG。",
+          "source": "chatmonteur/skills/references/hyperframes-registry.md:46"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "open-edit",
+          "path": "open-edit/pipeline/design/captions.ts",
+          "line": 72,
+          "why": "词级/字级 reveal 与分页保持的完整实现"
+        },
+        {
+          "repo": "open-edit",
+          "path": "open-edit/pipeline/director-brief.md",
+          "line": 103,
+          "why": "围绕主体构图、安全边距与可读性的硬规则"
+        },
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/skills/subtitles.md",
+          "line": 17,
+          "why": "Netflix/BBC 字幕标准的可执行数值表"
+        },
+        {
+          "repo": "video-shotcraft",
+          "path": "video-shotcraft/references/shots/typography/blur-slide.md",
+          "line": 1,
+          "why": "镜头配方卡的完整结构：参数表 + 已知坑"
+        },
+        {
+          "repo": "hyperframes",
+          "path": "hyperframes/skills/embedded-captions/SKILL.md",
+          "line": 123,
+          "why": "安全区驱动的字幕排布与遮挡阈值"
+        }
+      ],
+      "children": [
+        {
+          "id": "subtitle-timing",
+          "title": "字幕时序与断句",
+          "tag": "shared",
+          "summary": "词级时间戳直接驱动 reveal，分页按字符预算而不是词数。",
+          "goal": "字幕是唯一把字和声音绑在一起的东西。时序必须来自真实转写，断句必须在语义边界，页面必须是单一可寻址的时间线。",
+          "inputs": [
+            "word-timings.json：每词绝对毫秒",
+            "说话人分离结果"
+          ],
+          "outputs": [
+            "分页后的 caption pages（start/end/words）",
+            "SRT / VTT / ASS 或内嵌 spans"
+          ],
+          "atomic": [
+            {
+              "name": "页面合并",
+              "impl": "combineTokensWithinMilliseconds",
+              "note": "值越大每页词越多；示例用 1200 ms，页时长再与下一页起点取 min"
+            },
+            {
+              "name": "字符单元预算",
+              "impl": "CJK=2、其余=1",
+              "note": "CAPTION_MAX_CHARS_PER_LINE=24、CAPTION_MAX_VISUAL_LINES=2，溢出改分页不截断"
+            },
+            {
+              "name": "阅读速度约束",
+              "impl": "≤17 CPS、单条 ≥0.83 s、≤7 s",
+              "note": "拉丁文每行 ≤42 字符，西里尔 37–39；换行在从句边界，不拆名词短语"
+            },
+            {
+              "name": "词级 reveal",
+              "impl": "每词一 span，delay 取 delayMs 原值",
+              "note": "字级再加 34 ms intra-word stagger，单字 pop 120 ms；末页尾留 600 ms"
+            },
+            {
+              "name": "残留清理",
+              "impl": "LINGER_MS=1500 / 硬杀分组",
+              "note": "页保持到下一页开口为止；GSAP 路径要显式 tl.set(opacity:0, visibility:hidden) 否则字幕会压到下一条上"
+            }
+          ],
+          "interview": "多说话人要换行并标注说话人，ASR 错词要按语义先改再排版，不能直接烧原始转写。",
+          "sports": "解说语速快，优先保证专有名词、比分、数字准确，页数宁可多不要压行。",
+          "mg": "时序来自 TTS 或用户转写的词级时间戳。字幕层独占逐字原文，场景文案只能是 ≤6 词的提炼短语，两者不得重复。",
+          "pitfalls": [
+            {
+              "title": "只渲染第一页",
+              "detail": "一条 cue 超过一屏时只发第一页，会把后半句静默丢掉——那些话被转写了、被定时了，然后从没显示。每页都必须渲染。",
+              "source": "open-edit/pipeline/design/captions.ts:87"
+            },
+            {
+              "title": "直接烧未清洗的转写",
+              "detail": "原始转写是无大小写、无标点的垃圾，且模型会在静音处幻觉出字幕组署名之类的句子。必须先按语义改错词、补标点、删幻觉段再排版。",
+              "source": "chatmonteur/skills/subtitles.md:83"
+            },
+            {
+              "title": "字幕位置压住播放器控件",
+              "detail": "底边距要 9% 帧高，低于 8–10% 会被 YouTube 进度条盖住。锚点固定 bottom-center，两行时第二行向上生长，字幕不跳。",
+              "source": "chatmonteur/skills/subtitles.md:37"
+            },
+            {
+              "title": "剪辑后没重取时序",
+              "detail": "每次剪切后时序都会漂。字幕和图形用的转写必须取自最终版草稿，或者把词时序搬到新的对齐时间线上重算。",
+              "source": "chatmonteur/skills/montage.md:145"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/captions/types.ts",
+              "line": 179,
+              "why": "行长 24 单元、2 行、LINGER 1500ms 的共享常量"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/captions/segmenter.ts",
+              "line": 7,
+              "why": "CJK=2 的字符单元预算与中英混排规则"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/subtitles.md",
+              "line": 19,
+              "why": "行数/行长/CPS/时长的完整数值标准"
+            },
+            {
+              "repo": "remotion-dev-skills",
+              "path": "remotion-dev-skills/skills/remotion-captions/display-captions.md",
+              "line": 67,
+              "why": "createTikTokStyleCaptions 分页与 Sequence 时长计算"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/design/captions.ts",
+              "line": 99,
+              "why": "光标接力与页保持到下一页开口的算法"
+            }
+          ]
+        },
+        {
+          "id": "subtitle-render",
+          "title": "字幕排布与烧录",
+          "tag": "shared",
+          "summary": "按安全区与遮挡数据放字幕，最后一层叠加，烧录只在明确要求时做。",
+          "goal": "字幕放错位置比字幕难看更致命。要用结构化的安全区数字决定位置，并把烧录与软字幕当成两条不同的交付路径。",
+          "inputs": [
+            "safe-zones.json / analysis.json",
+            "字幕分页结果",
+            "品牌字体与配色"
+          ],
+          "outputs": [
+            "带位置与样式的字幕层",
+            "烧录成片或独立 SRT/VTT/ASS"
+          ],
+          "atomic": [
+            {
+              "name": "安全边距",
+              "impl": "9:16 上≥11% 下≥17% 左≥6% 右≥11%；16:9 约 6% 四边内缩",
+              "note": "无 analysis.json 时按此放，并避开画面正中（说话人所在）"
+            },
+            {
+              "name": "贴边区排布",
+              "impl": "zones.hugLeft / hugRight",
+              "note": "紧贴人物剪影的干净竖条；右侧列用 text-align:left 让字从主体旁开始，远角是兜底不是默认"
+            },
+            {
+              "name": "遮挡验收",
+              "impl": "check-occlusion.cjs",
+              "note": "单词遮挡 ≥65% 判 FAIL、≥35% WARN；整条字幕 ≥50% FAIL，hero 例外放宽到 68%"
+            },
+            {
+              "name": "可读性靠阴影",
+              "impl": "text-shadow / drop-shadow",
+              "note": "禁止为可读性加实心底板；作为设计元素的图形卡片例外"
+            },
+            {
+              "name": "烧录样式",
+              "impl": "ffmpeg subtitles force_style",
+              "note": "三套预设：hormozi（Arial Black 28/Outline3/Alignment10）、standard（20/BorderStyle4/Alignment2）、minimal（16/Alignment1/MarginL40）"
+            },
+            {
+              "name": "软字幕交付",
+              "impl": "baocut export --to srt/vtt/mp4",
+              "note": "同一份渲染计划同时产出烧录与外挂；未翻译句留空不回退原文"
+            }
+          ],
+          "interview": "访谈人脸常在画面中央，字幕走贴边区或下三分之一，绝不压脸。",
+          "sports": "字幕要避开记分牌与场边广告区，比分类信息交给比分卡而不是字幕。",
+          "mg": "字幕是贯穿全片的单一 overlay composition（独立 track、data-start=0），章节重渲永不碰它。",
+          "pitfalls": [
+            {
+              "title": "浅底浅字直接消失",
+              "detail": "纯白发光字压在浅色画面（白杯子、天空、窗）上会看不见，而这类失败对几何校验完全不可见。要在样式里预先烘一层深色 text-shadow 作接地层。",
+              "source": "open-edit/docs/recipe-format.md:115"
+            },
+            {
+              "title": "br 不能断 inline-block",
+              "detail": "<br> 断得开普通行内文本，断不开一串 display:inline-block 的词 span，字幕会溢出盒子并以 bounds 失败。每行必须自己是一个块元素。",
+              "source": "open-edit/pipeline/director-brief.md:128"
+            },
+            {
+              "title": "字幕尺寸凭感觉给",
+              "detail": "9:16 竖屏 1080×1920 的社交字幕要 sizePx ≥ 86（约 4.5% 帧高）；web 渲染路线的经验值是 96px（8.9% 帧高），烧录路线约 5.5%，两者不可直接搬。",
+              "source": "OpenChatCut/src/agent/tools/schemas/captions-tools.ts:26"
+            },
+            {
+              "title": "默认就烧死字幕",
+              "detail": "烧录不可逆，且丢掉多语言与可访问性。烧录只在用户明确要求时做，并且要先问用哪一种样式变体。",
+              "source": "chatmonteur/skills/INDEX.md:11"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/embedded-captions/scripts/safe-zones.cjs",
+              "line": 252,
+              "why": "hugLeft/hugRight 与 heroBands 的几何计算"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/embedded-captions/scripts/check-occlusion.cjs",
+              "line": 88,
+              "why": "词级/整条字幕遮挡的失败阈值"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/director-brief.md",
+              "line": 120,
+              "why": "两种画幅下字幕安全边距的具体百分比"
+            },
+            {
+              "repo": "video-editing-skill",
+              "path": "video-editing-skill/scripts/caption.sh",
+              "line": 92,
+              "why": "三种烧录样式的完整 force_style 参数"
+            },
+            {
+              "repo": "baocut",
+              "path": "baocut/skills/baocut/references/exports.md",
+              "line": 12,
+              "why": "同一渲染计划产出 srt/vtt/mp4 的导出契约"
+            }
+          ]
+        },
+        {
+          "id": "reframe",
+          "title": "横转竖 reframe",
+          "tag": "shared",
+          "summary": "分段选裁切，跟随主体并保护 UI 区，先预览再落 plan。",
+          "goal": "长视频转竖屏是二次构图，不是缩放。要按镜头分段决定裁切，保住观众真正在看的东西，并留下可编辑的中间产物。",
+          "inputs": [
+            "源视频与镜头边界",
+            "人脸/主体检测或帧采样",
+            "目标画布尺寸"
+          ],
+          "outputs": [
+            "随时间变化的 crop path（关键帧）",
+            "vertical plan（可编辑）",
+            "reframe preview 片段"
+          ],
+          "atomic": [
+            {
+              "name": "自动跟随",
+              "impl": "auto_reframe → builtin:zoom __openchatcutReframeCurve",
+              "note": "每 15 帧采样一次，sensitivity 0.5 控制吸附强度，smooth 0.45 做时域 EMA 去抖，长片最多 60 次 seek"
+            },
+            {
+              "name": "分段裁切",
+              "impl": "按镜头/版式变化切段",
+              "note": "说话人特写用居中 cover；含幻灯片、产品表、记分牌、游戏 UI 的段落要更宽的处理"
+            },
+            {
+              "name": "预览再落计划",
+              "impl": "video-edit-cli reframe preview → plan",
+              "note": "先 --crop 656:0:608:1080 --canvas 1080x1920 出预览，确认后再 derive 成可校验的 plan 渲染"
+            },
+            {
+              "name": "尺寸拟合",
+              "impl": "fitLongestEdge / fitShortestSide",
+              "note": "保持宽高比、从不放大；短边拟合还会把两边取偶数（最小 2）以适配编码器"
+            },
+            {
+              "name": "候选阶段可行性",
+              "impl": "gap",
+              "note": "现有仓库无完整实现，需自研"
+            }
+          ],
+          "interview": "保人脸优先。单人访谈可固定居中，双人对谈要按说话人切换裁切窗口。",
+          "sports": "记分牌、时钟、比赛 UI 是保护区。大范围运动（长传、快攻）宁可拉宽也不要让 crop 追丢球。",
+          "pitfalls": [
+            {
+              "title": "留大黑边或切掉正文",
+              "detail": "自动跟踪不可用时不要硬套一个全局裁切，也不要留大片空条。改用逐段的静态变换，并先看源帧确认关键文字、产品、比分、控件仍在画内。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md:105"
+            },
+            {
+              "title": "裁切改变了原意",
+              "detail": "标题、字幕、裁切、插入画面都不能改变素材原本的意思。逐帧抽查要覆盖开头、事件点、收尾以及每一次裁切或叠加的变化点。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:12"
+            },
+            {
+              "title": "crop 抖动",
+              "detail": "smooth 设 0 时用逐帧原始能量，crop 窗口会跟着检测噪声抖。默认 0.45 的 EMA 是为了抑制抖动；采样间隔越小关键帧越多也越慢。",
+              "source": "OpenChatCut/src/agent/tools/schemas/reframe-tools.ts:14"
+            },
+            {
+              "title": "竖屏上下会被平台 UI 盖",
+              "detail": "9:16 的关键内容要留在垂直方向中间 75% 之内，上下两端会被平台界面覆盖。",
+              "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:95"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/reframe-tools.ts",
+              "line": 5,
+              "why": "自动 reframe 的采样、灵敏度与平滑参数"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md",
+              "line": 102,
+              "why": "分段裁切与保护区的编辑规则"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/workflows.md",
+              "line": 83,
+              "why": "预览 crop 再导出 vertical plan 的命令序列"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/core/src/media/frame-fit.ts",
+              "line": 4,
+              "why": "保持宽高比、不放大、取偶数的尺寸拟合"
+            }
+          ]
+        },
+        {
+          "id": "mg-recipe",
+          "title": "MG 配方与视觉语言",
+          "tag": "shared",
+          "summary": "用配方卡和编译式配方生成图形，把每次运行的设计分析消掉。",
+          "goal": "每次运行都重新做设计判断会产生通用 AI 味。要把craft 编成离线验证过的配方，运行时只执行不思考。",
+          "inputs": [
+            "word-timings.json",
+            "meta.json：画布 W/H/fps/时长",
+            "选中的配方或 Frame"
+          ],
+          "outputs": [
+            "final/template.wv + manifest.json",
+            "或 Remotion 场景组件"
+          ],
+          "atomic": [
+            {
+              "name": "镜头配方卡",
+              "impl": "video-shotcraft 157 卡 / 214 样式",
+              "note": "每卡含一句话、适用、时长、能量、动效核心、参数表、已知坑与可复制的 Remotion 实现"
+            },
+            {
+              "name": "编译式配方",
+              "impl": "open-edit refs/html/<id>/recipe.ts",
+              "note": "散文 sheet 离线写并验证，再派生成模块；运行时零 token、分页与尺寸算术由构造保证"
+            },
+            {
+              "name": "参考画布与 SCALE",
+              "impl": "9:16 → 736×1312，16:9 → 1280×720",
+              "note": "sheet 里所有 px 按参考画布写，SCALE=W/W_ref；ms 与 z-index 永不缩放"
+            },
+            {
+              "name": "Frame 视觉世界",
+              "impl": "pireel studio-frames content/<id>/frame.md",
+              "note": "frontmatter 给 palette/tokens，正文给调色语义、版式法则、动效性格、禁忌；与 Skill 正交"
+            },
+            {
+              "name": "非协商动效规则",
+              "impl": "claude-remotion-skill 10 条",
+              "note": "禁线性缓动、入场同时动 2–3 个属性、3–6 帧错峰、退出比入场快、五层堆叠、静止元素微呼吸"
+            },
+            {
+              "name": "组件注册表",
+              "impl": "hyperframes blocks / components",
+              "note": "block 有自己的尺寸与时长、用 data-composition-src 引用；component 无尺寸无时长、直接内联"
+            }
+          ],
+          "interview": "图形克制：下三分之一、章节卡、引言卡为主，动效幅度小，让位给说话内容。",
+          "sports": "高能视觉语言（斜切、危险条纹、巨号数字），但全画面级冲击全片 ≤3 处。",
+          "mg": "在 MG 方向这是主线不是配件：先按 frontmatter 选卡，再读卡全文与 demo TSX 全文，卡上标注的命门参数不得降档。",
+          "pitfalls": [
+            {
+              "title": "同位置接力叠成一堆",
+              "detail": "多个结构轮流占同一个位置时，每个单元的生命周期必须以下一个占位者的开始时间为界，不能以 cue 结束为界。密集语音（每拍 8+ 词）会把 2–3 个结构堆成看不懂的一坨，且这类失败 --verify 看不见。",
+              "source": "open-edit/docs/recipe-format.md:86"
+            },
+            {
+              "title": "词距没算字体的墨水外溢",
+              "detail": "斜体展示字（Playfair 的 T/G/Y）墨水会超出字身宽度约 0.5em，标称 0.3em 的间距渲染出来是粘连的。验证过的写法是 margin-right:0.45em 再加一个尾随 &#160;。",
+              "source": "open-edit/docs/recipe-format.md:108"
+            },
+            {
+              "title": "一份内容不算验证",
+              "detail": "词密度变化会走到不同的时序分支，画面变化会撞出不同的碰撞。每个配方必须在至少 2 份词密度不同的内容上验证过才算完成。",
+              "source": "open-edit/docs/recipe-format.md:129"
+            },
+            {
+              "title": "配方卡参数直接搬进实战",
+              "detail": "配方卡的参数是在灰阶占位素材上调校的，是起点不是定稿。首次实战必须用真实素材回验；文案词数变化时 stagger 总长会把末词挤出窗口。",
+              "source": "video-shotcraft/references/shots/typography/blur-slide.md:44"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "open-edit",
+              "path": "open-edit/docs/recipe-format.md",
+              "line": 1,
+              "why": "编译模块 + 散文 sheet 的双形态与必备章节"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/shots/typography/blur-slide.md",
+              "line": 30,
+              "why": "一张配方卡的参数表与调节手感"
+            },
+            {
+              "repo": "pireel",
+              "path": "pireel/packages/studio-frames/README.md",
+              "line": 36,
+              "why": "Frame 与 Skill 正交、Frame 必须直导的七件事"
+            },
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 13,
+              "why": "10 条非协商动效规则"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/references/hyperframes-registry.md",
+              "line": 8,
+              "why": "block 与 component 的区别与接入方式"
+            }
+          ]
+        },
+        {
+          "id": "sports-graphics",
+          "title": "赛事包装组件",
+          "tag": "sports",
+          "summary": "比分卡、人物卡、章节卡消费 typed props，只读已验证的状态。",
+          "goal": "赛事包装的信息（比分、球员、时间）必须准确。图形组件要接受结构化 props，数据来自已验证的状态而不是模型自由生成。",
+          "inputs": [
+            "已验证的赛事数据（比分/球员/时间）",
+            "选中的视觉语言 Frame",
+            "章节与镜头边界"
+          ],
+          "outputs": [
+            "比分卡/人物卡/章节卡的图形层",
+            "typed props 定义"
+          ],
+          "atomic": [
+            {
+              "name": "typed props",
+              "impl": "create_motion_graphic_from_code 的 properties[]",
+              "note": "{key,label?,type?,defaultValue}[]，完整 JSX 必须在同一次调用里给全，先声明后补代码会被拒"
+            },
+            {
+              "name": "滚动数字",
+              "impl": "hyperframes number-wheel",
+              "note": "每位数字一列，spin=single/double/triple 控圈数，spacing 控列距，tone=inherit/ink/paper/accent"
+            },
+            {
+              "name": "赛事视觉语言",
+              "impl": "pireel varsity-bold Frame",
+              "note": "炭黑 #101418 + 血橙 #FF4D1F，统一前倾斜切，对阵必须分胜负，全橙只用一次"
+            },
+            {
+              "name": "组件 id 前缀",
+              "impl": "2–3 字母前缀（hz-cg-0）",
+              "note": "block 会变成共享文档里的子合成，未加前缀的 id 会静默冲突"
+            },
+            {
+              "name": "赛事叙事骨架",
+              "impl": "buildup → 决定性回合 → 结果 → 回放/反应",
+              "note": "证据信号：记分牌、解说能量、观众声、回放转场、胜率变化"
+            }
+          ],
+          "sports": "比分与球员名必须来自已验证数据；回放不能被当成实况；结果不能脱离铺垫单独出现。",
+          "mg": "同一套 typed props 组件泛化成数据动画：chart race、count-up、flowchart。数字仍须来自 facts.json。",
+          "pitfalls": [
+            {
+              "title": "比分/球队张冠李戴",
+              "detail": "赛事类剪辑最典型的失败是比分、球员、球队写错，或把回放当成实况呈现。图形数据必须绑定已验证的赛事状态，并在逐帧抽查里核对。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:9"
+            },
+            {
+              "title": "数字用比例字体跳动",
+              "detail": "计数与比分要用等宽/表格数字，否则每帧宽度变化会让整个卡片抖。number-wheel 这类滚轮组件用固定列宽解决。",
+              "source": "hyperframes/registry/components/number-wheel/registry-item.json:5"
+            },
+            {
+              "title": "skewX 被引擎静默忽略",
+              "detail": "斜切是赛事包装的核心语言，但 open-edit 引擎里 transform:skewX 被静默忽略、元素按正轴渲染。要用 clip-path 多边形做斜切。",
+              "source": "open-edit/pipeline/scripts/lint-template.ts:143"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/registry/components/number-wheel/registry-item.json",
+              "line": 1,
+              "why": "滚动数字组件的变量定义（spin/spacing/tone）"
+            },
+            {
+              "repo": "pireel",
+              "path": "pireel/packages/studio-frames/content/varsity-bold/frame.md",
+              "line": 1,
+              "why": "赛事播出包装的完整视觉语言与禁忌"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+              "line": 9,
+              "why": "赛事/电竞的叙事骨架、证据信号与失败模式"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/mg-code-tools.ts",
+              "line": 4,
+              "why": "MG 资产的 typed props 与沙箱校验契约"
+            }
+          ]
+        },
+        {
+          "id": "design-system",
+          "title": "设计系统与品牌",
+          "tag": "shared",
+          "summary": "从本次内容写出设计系统文件，所有文档回读校验，不许有系统外的值。",
+          "goal": "设计漂移的根因是顺序不是知识。系统必须在拿到内容之后写，并且能机械校验每一份文档是否只用了系统里声明过的值。",
+          "inputs": [
+            "本次运行的转写与画面事实",
+            "品牌 brand.json 或用户素材",
+            "vision pass 的 analysis.json"
+          ],
+          "outputs": [
+            "design/system.json：字体/字阶/配色/间距/缓动/reveal 单位/devices/donors",
+            "brand profile 应用后的图形层"
+          ],
+          "atomic": [
+            {
+              "name": "字阶带自己的字距",
+              "impl": "Rung{role,px,weight,trackingEm,case}",
+              "note": "字距属于这一级而不是使用它的元素；大字更紧，符号在正文尺寸附近翻转"
+            },
+            {
+              "name": "命名缓动与时长",
+              "impl": "MotionSpec.easings / durationsMs",
+              "note": "杜绝在使用点直接敲曲线——实测出现过同一条曲线被写了 934 次"
+            },
+            {
+              "name": "reveal 单位声明",
+              "impl": "revealUnit: word/character/line/cue",
+              "note": "选 word 就必须有真实逐词时间；触发这条规则的那次运行磁盘上有 1872 个词时间却按 cue 揭示"
+            },
+            {
+              "name": "接地校验",
+              "impl": "assertGrounded + groundedIn",
+              "note": "系统必须点名磁盘上真实存在的文件，所以不可能在内容到位之前先写设计"
+            },
+            {
+              "name": "品牌档案",
+              "impl": "brands/<name>/brand.json",
+              "note": "colors/fonts/spacing/borderRadius/typography（h1 88/700 … label 34/600 ls2）/assets 一次性注入"
+            },
+            {
+              "name": "vision pass 输出",
+              "impl": "analysis.json（canvas px）",
+              "note": "逐 beat 给 shot、subjectBbox、faceBbox、negSpaceRect、brightness；设计阶段只读数字不再看帧"
+            }
+          ],
+          "interview": "访谈用一套克制系统贯穿全片，逐段变的是构图与尺度，不是字体与配色。",
+          "sports": "品牌色只做一次强调（例如全片只有一个血橙陈述），其余交给中性色。",
+          "mg": "MG 必开这一步：design.md 先于分镜写死配色与字体，再按能量/调性两轴从预设取 easing、时长、过冲与 squash。",
+          "pitfalls": [
+            {
+              "title": "先写设计再看内容",
+              "detail": "实测一支 12 分钟片子用系统字体加半透明底板交付，217 条字幕一个位置。根因是设计在内容存在之前就被写死，后来没人回头改。系统必须从内容写起。",
+              "source": "open-edit/pipeline/design/system.ts:1"
+            },
+            {
+              "title": "vision pass 反复看帧",
+              "detail": "视觉分析只跑一次并输出画布像素级的结构化数字，设计阶段绝不再读帧、不自己推构图，否则每次运行的判断都不一样。",
+              "source": "open-edit/docs/FLOW.md:44"
+            },
+            {
+              "title": "系统外的值静默混入",
+              "detail": "颜色、字号、缓动只要不在系统里声明就应该是一条 finding 而不是一次判断。check() 回读每一份文档，未声明的值直接判失败。",
+              "source": "open-edit/pipeline/design/system.ts:12"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/design/system.ts",
+              "line": 1,
+              "why": "设计系统作为文件存在的原因与字段定义"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/docs/FLOW.md",
+              "line": 27,
+              "why": "vision pass 是唯一一次视觉分析，输出画布像素数字"
+            },
+            {
+              "repo": "claude-code-video-toolkit",
+              "path": "claude-code-video-toolkit/brands/digital-samba/brand.json",
+              "line": 1,
+              "why": "brand profile 的字段结构与字号字重表"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/director-brief.md",
+              "line": 79,
+              "why": "analysis.json 的四个结构化字段与使用方式"
+            }
+          ]
+        },
+        {
+          "id": "visual-qa",
+          "title": "视觉 lint 与逐帧验收",
+          "tag": "shared",
+          "summary": "机械 lint → 引擎重放校验 → 预览帧眼检，三层分工不重叠。",
+          "goal": "包装层的错误大多是静默的：字画在了视频底下、字幕永远不可见、动画从没播过。要用便宜的机械检查挡住大部分，再用眼检兜住剩下的。",
+          "inputs": [
+            "生成的模板文档与 manifest",
+            "渲染或预览帧"
+          ],
+          "outputs": [
+            "lint findings",
+            "--verify 的 bounds/never-visible/occluded 报告",
+            "预览帧接触表 sheet.png"
+          ],
+          "atomic": [
+            {
+              "name": "机械 lint",
+              "impl": "lint-template.ts",
+              "note": "抓 @import 不在首位、重复 id、两个动画同时驱动 opacity、line-height<1.2 无余量、animation-delay 超时长"
+            },
+            {
+              "name": "引擎重放校验",
+              "impl": "veed-engine-cli <run>/final --verify",
+              "note": "离屏重放整条时间线读真实绘制列表；失败行点名元素 id 与帧号；只做机械修复不改设计"
+            },
+            {
+              "name": "预览帧先于渲染",
+              "impl": "preview-frames.cjs",
+              "note": "每帧约 2 秒合成，默认采样每个分组/高潮窗；整片渲染要几分钟，不能用来发现排版问题"
+            },
+            {
+              "name": "五点眼检清单",
+              "impl": "洗白/字压字/阅读顺序/主角存在感/平衡",
+              "note": "这五类几何门禁抓不到；建议交给只拿到预览图和清单的子代理做 PASS/FIX 判定"
+            },
+            {
+              "name": "帧抽查",
+              "impl": "remotion still --frame N / ffmpeg -ss",
+              "note": "至少抽 15/45/90/150 帧；查间距、出画、缺 clamp、层序、对比度"
+            },
+            {
+              "name": "透明通道与字体",
+              "impl": "export_motion_graphic_prores / @font-face",
+              "note": "hero 文字绝不依赖系统默认字体；需要合成的图形层走 ProRes 带 alpha 导出"
+            }
+          ],
+          "interview": "抽查点放在开场、每个章节卡、结尾；重点看字幕是否压脸、说话人切换是否错位。",
+          "sports": "抽查点覆盖每次比分变化与每次裁切变化，核对比分卡数字与画面一致。",
+          "mg": "验收贯穿每一镜：完成即 remotion still 抽两个写死的验收帧眼检；终检另派干净上下文 subagent，不给制作过程。",
+          "pitfalls": [
+            {
+              "title": "把渲染当设计循环",
+              "detail": "--verify 是安全网不是设计循环。要按引擎限制一次写对，让第一次渲染就干净；不要靠抽帧去发现排版问题。",
+              "source": "open-edit/pipeline/director-brief.md:332"
+            },
+            {
+              "title": "expect-visible 覆盖面很窄",
+              "detail": "引擎 0.8.0 的 expect-visible 只统计承载 id 的那个元素的墨水，词在子 span 上的结构会被跳过。所以这条检查目前只在字幕自带文本时才生效。",
+              "source": "open-edit/pipeline/director-brief.md:303"
+            },
+            {
+              "title": "em 间距按父级字号解析",
+              "detail": "flex 容器里 gap/margin 用 em 会按父元素字号（常是 16px）解析而不是文字尺寸，大字排版会错位。大字周围一律用 px。",
+              "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:93"
+            },
+            {
+              "title": "忘记 --overwrite 看旧文件",
+              "detail": "重渲染不加 --overwrite 会检查到上一版的产物，得出错误结论。抽帧验收前先确认文件时间戳。",
+              "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:133"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/scripts/lint-template.ts",
+              "line": 195,
+              "why": "opacity 被两个动画同时驱动等静默失败的检测"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/director-brief.md",
+              "line": 313,
+              "why": "--verify 的三类失败与机械修复流程"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/embedded-captions/SKILL.md",
+              "line": 138,
+              "why": "渲染前预览帧与五点眼检清单"
+            },
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 78,
+              "why": "抽帧验收的命令与按频次排序的检查项"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/references/hyperframes-registry.md",
+              "line": 79,
+              "why": "lint / check / snapshot 三道发布前门禁"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

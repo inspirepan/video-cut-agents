@@ -1,0 +1,415 @@
+{
+  "branches": [
+    {
+      "id": "product",
+      "title": "产品定位与双导演脑",
+      "tag": "decision",
+      "summary": "可解释的长视频高光导演：访谈/赛事共用工程链，各有一个领域 Planner；MG 动效是第三方向，生成而非选片",
+      "goal": "这 35 个仓库不是同一产品的不同实现，而是分散在理解、高光、编排、工程、渲染各层。产品不 fork 任何一个仓库，而是按层组装，并从第一天起就区分 InterviewPlanner 与 SportsPlanner。",
+      "inputs": [
+        "长访谈或赛事录像（30–180 分钟）",
+        "一句用户意图（主题/人物/时长/平台）"
+      ],
+      "outputs": [
+        "带证据、替补候选和安全边界的事件/语义故事板",
+        "确认后生成 Timeline IR 工程 + MP4 + 决策日志"
+      ],
+      "interview": "卖点是“选得准且不曲解”：每个片段都有词级证据，说话人正确，观点完整，并保留必要上下文。",
+      "sports": "卖点是“识别完整事件且懂比赛重要性”：掌握比分/时钟状态，按 setup→action→result→replay 还原事件，对回放去重，并有剧透策略。",
+      "points": [
+        "可编辑工程是最高层真相，渲染器只是下游：Timeline IR 经 compiler 生成 FFmpeg/Remotion/HyperFrames job",
+        "检测器的峰值只是召回候选（recall candidate）；经过语义确认、边界完整检查和去重归组后，才是可剪素材",
+        "两个方向不共享高光 Prompt，但共享 MediaStore、Evidence Timeline、Timeline IR、渲染与 QA",
+        "MG 动效（图形动画）方向不需要素材理解与召回：脚本变成分镜/beat sheet，选片变成组件/配方选型 + typed props，QA 变成逐帧验收与 lint"
+      ],
+      "pitfalls": [
+        {
+          "title": "fork 单一仓库一路魔改",
+          "detail": "每个仓库只覆盖一层：OpenStoryline 偏 Vlog 节点链，OpenChatCut 偏工程，ClipTalk 偏高光。整体 fork 会继承错误的产品假设与许可证约束。对策：按层借鉴接口，重写编排层。",
+          "source": "research/video-editing-agent-deep-dive-v2.md:21"
+        },
+        {
+          "title": "用一个笼统的“视频理解”维度评价仓库",
+          "detail": "访谈高光=完整观点，赛事高光=完整事件，两者的失败模式完全不同。对策：评价维度拆成公共内核 + 访谈专属 + 赛事专属三组。",
+          "source": "research/video-editing-agent-deep-dive-v2.md:35"
+        },
+        {
+          "title": "把 MP4 当唯一交付物",
+          "detail": "没有可编辑工程，就无法替换候选、积累反馈和长期迭代。对策：Timeline IR、proposal/diff/undo 从 MVP 第一天起就要存在。",
+          "source": "research/video-editing-agent-deep-dive-v2.md:501"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "主报告",
+          "path": "research/video-editing-agent-deep-dive-v2.md",
+          "line": 9,
+          "why": "结论先行：双路径与按层组装策略"
+        },
+        {
+          "repo": "首轮报告",
+          "path": "research/video-editing-agent-deep-dive-v1.md",
+          "line": null,
+          "why": "五个重点仓库的首轮判断"
+        },
+        {
+          "repo": "来源台账",
+          "path": "research/claim-source-ledger.md",
+          "line": 1,
+          "why": "每个判断的来源、日期与置信度"
+        }
+      ],
+      "children": [
+        {
+          "id": "product-two-brains",
+          "title": "三条产品方向",
+          "tag": "decision",
+          "summary": "访谈与赛事共享工程链，但高光定义不同；MG 动效（图形动画）不选片，而是从脚本生成画面",
+          "goal": "访谈和赛事最终都编译成统一的 HighlightUnit，由两个领域的 Planner 决定选什么、什么算完整。MG 方向没有“候选”：输入是分镜和数据，输出是代码型 composition；它既是集锦的包装层，也能独立成片。",
+          "children": [
+            {
+              "id": "product-interview",
+              "title": "长访谈方向",
+              "tag": "interview",
+              "summary": "语义压缩但不改变说话人意图",
+              "goal": "以词级转写、说话人轮次（speaker turn）、问答配对和观点/故事/金句单元为证据，输出语义完整、能独立成立的片段；任何改写都保留原句和时间码。",
+              "inputs": [
+                "词级 ASR",
+                "说话人分离（diarization）",
+                "topic/quote/story 单元",
+                "表情与声音事件"
+              ],
+              "outputs": [
+                "SemanticHighlight → HighlightUnit"
+              ],
+              "points": [
+                "典型失败：句级 SRT 截断半个词；问题被删掉只剩回答；只按静音切分仍然冗长；金句断章取义；只挑情绪强的空洞片段；段与段之间是生硬的 jump cut（画面跳接）",
+                "维度：词级语音证据、说话人和轮次、语义单元、表达完整性、内容价值、对话剪辑语法（声音先入或延后、反应镜头、补充画面 B-roll）、多版本策略",
+                "开源拼装路径已经比较成熟：video-use + premiere-agent + ChatMonteur + ClipTalk + BaoCut + video-edit-cli"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 55,
+                  "why": "长访谈专属维度表"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+                  "line": 1,
+                  "why": "Interview/Podcast profile：question→answer→evidence→conclusion"
+                }
+              ]
+            },
+            {
+              "id": "product-sports",
+              "title": "体育赛事方向",
+              "tag": "sports",
+              "summary": "还原完整事件及其比赛意义：刺激度不能替代比分与规则上下文",
+              "goal": "以比赛状态、项目的事件本体（该项目有哪些事件类型）、动作/声音/OCR 候选、直播—回放关系为证据，输出 setup→action→reaction→replay→result 完整事件组。现有仓库只有通用事件骨架，比分/时钟状态机与项目专属 detector 需自研。",
+              "inputs": [
+                "比分 OCR 时序",
+                "比赛时钟/节次",
+                "事件 detector",
+                "解说/欢呼/哨声",
+                "转播切镜与回放标志"
+              ],
+              "outputs": [
+                "SportsEventGroup → HighlightUnit"
+              ],
+              "points": [
+                "典型失败：不知道得分是否扳平或绝杀；射门与进球混为一谈；把声音峰值当成事件；只留得分瞬间；同一进球出现三次；开头泄露结果；从动作中间切入；LLM 编造比分",
+                "维度：比赛状态、事件本体、多模态召回、事件完整性、回放与重复、重要性与悬念、动作安全边界、赛事包装",
+                "第一版只选一个项目和固定转播样式，不宣称支持通用体育"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 66,
+                  "why": "体育赛事专属维度表"
+                },
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/event_groups.py",
+                  "line": 347,
+                  "why": "detector peak 不是事件；候选归组后才算事件"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+                  "line": 1,
+                  "why": "Sports profile：buildup→decisive play→result→replay/reaction"
+                }
+              ]
+            },
+            {
+              "id": "product-mg",
+              "title": "MG 动效制作方向",
+              "tag": "mg",
+              "summary": "从脚本、数据和品牌生成片头、章节卡、字卡、比分卡、数据动画和 explainer 成片",
+              "goal": "目标是确定性、可复用、可审计的动效生产：LLM 选配方并填 typed props，Remotion/HyperFrames 负责确定性渲染，用逐帧验收替代审美自由发挥。既服务集锦的包装层，也可独立交付 explainer 和产品演示类整片。",
+              "inputs": [
+                "脚本或 beat sheet（分镜节拍表）",
+                "品牌/设计 profile",
+                "结构化数据（比分、图表、名单）",
+                "可选：配音与 BGM"
+              ],
+              "outputs": [
+                "scene/chapter 计划",
+                "composition 源码 + typed props",
+                "透明 overlay（叠加层）或完整 MP4",
+                "逐帧验收报告"
+              ],
+              "points": [
+                "现有仓库覆盖最全的方向：Remotion 官方 skills、video-shotcraft 157 张配方卡、HyperFrames、claude-remotion-skill、claude-code-video-toolkit、framecraft、llm-video-maker、OpenEdit、Pireel Frames、Diffusion Studio",
+                "典型失败：LLM 每次自由发明动画逻辑，导致风格漂移；非确定性 seek 造成帧不一致；字体缺失/透明通道错误；把代码组合当成整个长视频的工程真相",
+                "与集锦的接口：MG 动效（图形动画）在 Timeline IR 里只是一个 overlay/clip 类型，使用已验证的状态（比分、人物、金句），视觉层无权改事实"
+              ],
+              "refs": [
+                {
+                  "repo": "video-shotcraft",
+                  "path": "video-shotcraft/README.md",
+                  "line": 18,
+                  "why": "157 张镜头配方卡 + Remotion 实现 + Motion Workbench"
+                },
+                {
+                  "repo": "Remotion Skills",
+                  "path": "remotion-dev-skills/README.md",
+                  "line": 23,
+                  "why": "官方按任务拆分的 Remotion 最佳实践"
+                },
+                {
+                  "repo": "HyperFrames",
+                  "path": "hyperframes/README.md",
+                  "line": 32,
+                  "why": "HTML/CSS/GSAP → 确定性 MP4 的 Agent loop"
+                },
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 282,
+                  "why": "FFmpeg / Remotion / HyperFrames 分工"
+                }
+              ]
+            },
+            {
+              "id": "product-shared-core",
+              "title": "公共内核",
+              "tag": "shared",
+              "summary": "媒体、候选记录文件、Timeline IR、GUI、渲染与 QA 由两个方向共用",
+              "goal": "只替换领域 ontology（概念体系）、候选确认器、Planner 和评测集；其余基础设施共用一套。",
+              "points": [
+                "共用：Ingest、Evidence Timeline、Corpus/检索、HighlightUnit schema、Timeline IR、命令层、Compiler、渲染后端、QA 探针",
+                "分离：高光 Prompt、事件本体、边界规则、评测黄金集、包装模板（说话人字幕 vs 比分卡）"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 347,
+                  "why": "公共证据层之上运行两个领域 Planner"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "product-pipeline",
+          "title": "目标产线总览",
+          "tag": "shared",
+          "summary": "Ingest → Evidence → EditBrief → 双 Planner → 确认/边界/组合 → 音乐计划 → Timeline IR → 审阅 → Compiler → QA",
+          "goal": "长视频集锦里的“脚本”不是凭空写的旁白，而是素材中真实事件的编辑结构。QA 失败时走有界修复、回到 Timeline IR；通过则输出 MP4 + 工程 + 决策日志。",
+          "outputs": [
+            "ingest manifest",
+            "Evidence Timeline",
+            "EditBrief",
+            "HighlightUnit[]",
+            "music plan",
+            "Versioned Timeline IR",
+            "compiler jobs",
+            "QC report + decision log"
+          ],
+          "points": [
+            "① 素材接入 → ② 理解 → ③ 意图写脚本 → ④ 召回 → ⑤ 确认与边界 → ⑥ 编排 → ⑦ BGM/音频 → ⑧ 包装 → ⑨ Timeline IR → ⑩ 合成 → ⑪ QA → ⑫ GUI 审阅贯穿全程",
+            "LLM 默认只读 compact transcript + shot cards，原始帧只在候选重排和 QA 时按需读取",
+            "所有时间最终都用整数帧或 rational time base 表示，禁止跨模块混用浮点秒和毫秒"
+          ],
+          "refs": [
+            {
+              "repo": "主报告",
+              "path": "research/video-editing-agent-deep-dive-v2.md",
+              "line": 298,
+              "why": "目标产线 mermaid 图"
+            }
+          ]
+        },
+        {
+          "id": "product-mvp",
+          "title": "MVP 分期",
+          "tag": "decision",
+          "summary": "1A 访谈 MVP 与 1B 赛事研究原型并行，Phase 2 工程化，Phase 3 包装与规模化",
+          "goal": "产品先落地访谈方向，赛事以单一项目做研究原型；工程内核共享，但不共享高光 Prompt。",
+          "children": [
+            {
+              "id": "product-mvp-1a",
+              "title": "Phase 1A 访谈集锦 MVP",
+              "tag": "interview",
+              "summary": "30–180 分钟访谈 → 2–3 个叙事版本 → 最小 EDL（剪辑决策清单）→ FFmpeg",
+              "goal": "输入单机位或已切换的多机位 master；词级 ASR、speaker turns、topic/quote/story 单元为证据；EditBrief → 候选主题/金句；每单元保存上下文、safe range、替补与排除理由。GUI 只做 Highlight Board、候选预览与成片顺序。",
+              "points": [
+                "成功标准：用户保留率、片段替换率、断章取义/截词比例、首版可接受率、压缩比、每分钟源素材分析成本、人工修改时间"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 464,
+                  "why": "Phase 1A 定义与成功标准"
+                }
+              ]
+            },
+            {
+              "id": "product-mvp-1b",
+              "title": "Phase 1B 赛事研究原型",
+              "tag": "sports",
+              "summary": "只做一个项目 + 固定转播样式：比分牌标定、OCR 平滑、状态机、事件归并",
+              "goal": "先做比分牌区域标定、OCR 时序平滑、比赛时钟/比分状态机；再融合场景变化、动作候选、欢呼/解说峰值和比分变化做召回；最后用 VLM 归并直播动作、反应和多个回放。",
+              "points": [
+                "指标看事件 recall/precision、直播—回放归并准确率、比分一致率、完整事件率，而不是“视频是否成功导出”。",
+                "选哪个项目（足球/篮球/网球/赛车/电竞）是模型与数据决策，不是 UI 选项。"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 474,
+                  "why": "Phase 1B 定义与指标"
+                }
+              ]
+            },
+            {
+              "id": "product-mvp-2",
+              "title": "Phase 2 工程化与可修订",
+              "tag": "shared",
+              "summary": "Versioned Timeline IR、帧级时间、命令层、proposal/diff/undo、多轨音频、QA、缓存",
+              "points": [
+                "多轨音频、ducking（自动压低背景音）、字幕、简单转场、source provenance（素材来源追踪）",
+                "OpenEdit/video-use 风格的 lint、边界检查和输出 QA",
+                "缓存、幂等、失败恢复、job 状态和成本追踪"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 482,
+                  "why": "Phase 2 范围"
+                }
+              ]
+            },
+            {
+              "id": "product-mvp-3",
+              "title": "Phase 3 视觉包装与规模化",
+              "tag": "shared",
+              "summary": "Remotion/HyperFrames MG 插件、自动 reframe、design profile、batch variants、离线 eval suite",
+              "points": [
+                "人脸/主体跟踪、自动 reframe（重新构图）、字幕与 MG（图形动画）避让",
+                "用户 design profile 与可复用 style recipe",
+                "长素材库增量索引"
+              ],
+              "refs": [
+                {
+                  "repo": "主报告",
+                  "path": "research/video-editing-agent-deep-dive-v2.md",
+                  "line": 489,
+                  "why": "Phase 3 范围"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "product-decisions",
+          "title": "待决产品决策",
+          "tag": "decision",
+          "summary": "先做访谈还是同时做赛事、赛事第一个项目、用户审阅单位、是否交付可编辑工程",
+          "points": [
+            "先落访谈还是同时做赛事？→ 两个方向共享工程内核，MVP 先落访谈，赛事以一个项目并行做研究原型",
+            "赛事第一个项目是什么？→ 足球/篮球/网球/赛车/电竞的比赛状态和事件本体完全不同，这是模型与数据决策",
+            "用户审阅单位是什么？→ 访谈用语义片段/主题，赛事用完整事件，最终都映射为 Timeline Proposal",
+            "交付是否必须包含可编辑工程？→ 需要长期迭代与反馈积累时，Timeline IR 与 proposal/diff/undo 必须从第一天就存在"
+          ],
+          "refs": [
+            {
+              "repo": "主报告",
+              "path": "research/video-editing-agent-deep-dive-v2.md",
+              "line": 496,
+              "why": "针对访谈与赛事的产品决策"
+            }
+          ]
+        },
+        {
+          "id": "product-reuse",
+          "title": "复用优先级",
+          "tag": "decision",
+          "summary": "每个模块的首选来源与策略：直接借鉴 / 重写可商用实现 / 自研",
+          "points": [
+            "packed transcript / 切点可视化 ← video-use（可直接借鉴或复用，MIT）",
+            "多模态证据时间线 ← premiere-agent（融合 speech/visual/audio，保留 drill-down）",
+            "通用高光候选与事件组 ← ClipTalk（复用阶段划分与 schema；重写可商用实现，原仓库非商业许可）",
+            "访谈规则与质量门（质量检查关卡）← ChatMonteur + BaoCut",
+            "体育状态与事件模型 ← 无完整实现，自研项目插件",
+            "镜头节点链与基础 schema、VLM caption + aesthetic、本地 BGM 召回与节拍（beat）← OpenStoryline（Apache-2.0）",
+            "素材 corpus/provenance/MMR ← OpenMontage（重写为独立服务，AGPL）",
+            "可解释选片 rubric（评分标准）← OpenChatCut + OpenMontage（做成可版本化评分器）",
+            "工程/命令/撤销/提案 ← OpenChatCut（AGPL；许可证不允许则复刻架构语义）",
+            "字幕与 MG 动效（图形动画）recipe/gates ← OpenEdit（避免绑定闭源 renderer）",
+            "精剪与最终 mux（封装音画）← FFmpeg 自有确定性 compiler；复杂 MG ← Remotion / HyperFrames 插件式后端"
+          ],
+          "refs": [
+            {
+              "repo": "主报告",
+              "path": "research/video-editing-agent-deep-dive-v2.md",
+              "line": 443,
+              "why": "复用优先级表"
+            }
+          ]
+        },
+        {
+          "id": "product-limits",
+          "title": "研究限制与许可证风险",
+          "tag": "pitfall",
+          "summary": "只浅克隆仓库、深扫源码，未跑 E2E 基准；多个仓库是 copyleft 或非商业许可",
+          "points": [
+            "没有逐个安装并跑通各仓库的 E2E demo，也没有用同一素材对渲染速度、模型成本和成片质量做基准测试",
+            "OpenStoryline 的 README/TODO 和 OpenMontage 的工具数量存在文档口径不一致；以源码与 schema 为准",
+            "体育方向的结论是“现有仓库存在显著能力空档”，该结论限于本次调研的 35–37 个仓库",
+            "ClipTalk 非商业署名许可；OpenChatCut、OpenMontage、Pireel、Frontstage 等 copyleft；部分 Skill 仓库无顶层 LICENSE；Remotion 特殊许可需单独评估"
+          ],
+          "pitfalls": [
+            {
+              "title": "信营销数字不信 schema",
+              "detail": "README 与架构文档里的工具数量口径不同，说明迭代很快。对策：只信 schema 与实现。",
+              "source": "research/video-editing-agent-deep-dive-v2.md:133"
+            },
+            {
+              "title": "许可证只在集成时才看",
+              "detail": "AGPL/GPL/非商业许可会改变“直接嵌入”还是“复刻架构语义”的决定。对策：选型阶段就记录每个仓库的许可证。",
+              "source": "research/claim-source-ledger.md:1"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "主报告",
+              "path": "research/video-editing-agent-deep-dive-v2.md",
+              "line": 505,
+              "why": "研究限制"
+            }
+          ]
+        }
+      ],
+      "mg": "MG 方向的卖点是“脚本/数据/品牌 → 确定性、可复用的动效成片”：与集锦共享 Timeline IR、渲染后端和 QA，替换的是理解层和选片层。"
+    }
+  ]
+}

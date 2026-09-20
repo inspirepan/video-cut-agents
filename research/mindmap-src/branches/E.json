@@ -1,0 +1,3043 @@
+{
+  "branches": [
+    {
+      "id": "atomic-catalog",
+      "title": "原子能力清单",
+      "tag": "atomic",
+      "summary": "七个能力族的可替换实现，标注仓库出处、真实参数与许可证",
+      "goal": "把产线拆成可独立实现、独立替换、独立评测的原子能力。每项给出仓库里的真实实现和我们推荐的替代，避免重复造轮子，也避免误选带许可证风险的库。",
+      "inputs": [
+        "35 个仓库源码与 Skill 文档",
+        "claim-source-ledger.md"
+      ],
+      "outputs": [
+        "能力矩阵",
+        "选型建议",
+        "自研缺口清单"
+      ],
+      "atomic": [
+        {
+          "name": "能力族划分",
+          "impl": "探测/语音/视觉/音乐/检索/剪辑/渲染 七族",
+          "note": "每族内部的实现可以替换，族与族之间的接口用 artifact JSON 固定"
+        },
+        {
+          "name": "本地优先原则",
+          "impl": "Parakeet+Florence-2+CLAP 三通道全本地",
+          "note": "premiere-agent 证明长片理解不必上云"
+        },
+        {
+          "name": "provider 抽象",
+          "impl": "Protocol + 工厂，或字节级同构 JSON 契约",
+          "note": "目前只有 video-edit-cli、OpenChatCut、chatmonteur 三家做到"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "同名参数量纲不同",
+          "detail": "ffmpeg scdet 阈值 0.3 与 PySceneDetect ContentDetector 27.0 是两套量纲，互抄会让镜头切分完全失效。换实现必须重新标定阈值。",
+          "source": "chatmonteur/skills/references/engineering-facts.md:41"
+        },
+        {
+          "title": "AGPL/非商用权重混入",
+          "detail": "Ultralytics YOLO 是 AGPL 协议，essentia 与 aubio 是 AGPL/GPL，madmom 与 InsightFace 的模型权重禁止商用。选型时按 chatmonteur 的禁用清单过一遍；被禁的库可以用 MediaPipe、librosa 这类宽松许可证的库替代。",
+          "source": "chatmonteur/skills/references/engineering-facts.md:158"
+        },
+        {
+          "title": "跨仓建议互相冲突",
+          "detail": "Ultimate-Video-Editing-Skills 推荐 aubio 做 beat 检测，chatmonteur 因 GPL 明确禁用 aubio。直接把多个 Skill 拼进同一个 Agent 会引入合规冲突。",
+          "source": "Ultimate-Video-Editing-Skills/skills/ultimate-video-editor/automation/beat-sync.md:30"
+        },
+        {
+          "title": "同一脚本两处副本",
+          "detail": "hyperframes 与 OpenMontage 的 analyze-beatgrid.py 是同一份脚本的两个副本，行号差约 9 行。复用时要去重，否则两份会逐渐改得不一致。",
+          "source": "hyperframes/skills/music-to-video/scripts/analyze-beatgrid.py:21"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "premiere-agent",
+          "path": "premiere-agent/README.md",
+          "line": 3,
+          "why": "三通道本地感知栈的完整声明"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/recognition_models.py",
+          "line": 120,
+          "why": "CLAP/SigLIP/OCR/人脸模型集中装载点"
+        },
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/skills/references/engineering-facts.md",
+          "line": 158,
+          "why": "库选型的许可证禁用清单"
+        }
+      ],
+      "children": [
+        {
+          "id": "atomic-probe",
+          "title": "媒体探测与转码",
+          "tag": "atomic",
+          "summary": "把任意来源素材变成时间可信、可快速 seek（跳到任意时间点）的工作副本",
+          "goal": "长访谈和赛事素材来自手机、OBS、导播台（现场切换设备），帧率和容器五花八门。不先做归一化（统一规格），后面所有时间码都不可信。",
+          "inputs": [
+            "原始视频文件"
+          ],
+          "outputs": [
+            "ingest manifest JSON（入库清单）",
+            "归一化母版（统一规格的工作副本）",
+            "预览代理（低分辨率草稿副本）",
+            "contact sheet（全片缩略图总览图）"
+          ],
+          "atomic": [
+            {
+              "name": "流探测",
+              "impl": "ffprobe -v error -show_streams -show_format -of json",
+              "note": "时长取 video stream 而非 container（容器封装）；后者常继承更长的音轨或 edit list（MP4 里的播放顺序表）"
+            },
+            {
+              "name": "VFR 检测",
+              "impl": "r_frame_rate 与 avg_frame_rate 不一致即判 VFR",
+              "note": "VFR 指可变帧率；kajisho5 probe.py 置 variable_frame_rate_suspected 并强制 CFR（恒定帧率）"
+            },
+            {
+              "name": "尾部可解码校验",
+              "impl": "ffmpeg -ss + -f framehash 多点回退再二分",
+              "note": "ClipTalk：被截断的 MP4，moov（元数据块）仍上报原时长，必须真实解码验证"
+            },
+            {
+              "name": "预览代理转码",
+              "impl": "libx264 ultrafast CRF28 yuv420p + faststart",
+              "note": "ClipTalk：长边 1280，-force_key_frames expr:gte(t,n_forced*2)"
+            },
+            {
+              "name": "WebM 回退代理",
+              "impl": "libvpx-vp9 crf36 + libopus 96k",
+              "note": "开源 Chromium 没有 H.264 解码器，H.264 代理方案永远修不好"
+            },
+            {
+              "name": "关键帧归一化",
+              "impl": "-g fps -keyint_min fps，关键帧约每 1s",
+              "note": "montaj：关键帧（可独立解码的完整帧）够密，seek 才落得准；配 -t duration 而非 -to"
+            },
+            {
+              "name": "首帧封面",
+              "impl": "0/0.5/1/2/3 秒逐次抽帧 + 黑帧判定",
+              "note": "ClipTalk：dark_pixels/pixels≥.985 且 mean≤12 判黑"
+            },
+            {
+              "name": "联系表雪碧图",
+              "impl": "fps=1,scale=160:-1,tile=10x5",
+              "note": "全片按 1fps 抽检，比只抽 3 帧可靠；ClipTalk 另有 4 列雪碧图（缩略图拼成的图）"
+            },
+            {
+              "name": "旋转感知",
+              "impl": "按 display 尺寸而非 coded 尺寸计算",
+              "note": "montaj：手机竖拍带 rotation tag（旋转标记），重构图必须用 display（显示方向）宽高"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "抽帧覆盖度不校验",
+              "detail": "源文件损坏时只抽到前半段，模型却给出全片结论。ClipTalk 在帧数低于期望 85% 或最晚帧覆盖不到尾部时直接中止视觉分析并报错。",
+              "source": "ClipTalk/app/media.py:349"
+            },
+            {
+              "title": "容器时长当成画面时长",
+              "detail": "MP4 容器的 duration 常继承更长的音轨或 edit list，据此排时间线会多出一段没有画面的尾巴。必须取 video stream 自身的时长。",
+              "source": "ClipTalk/app/media.py:183"
+            }
+          ],
+          "interview": "多台相机同时拍摄的长录音必须先测时钟漂移（录音随时间逐渐错位）；消费级设备漂移 20-500ppm，一小时可差 1.8 秒。",
+          "sports": "导播台（现场切换设备）与球场机位（相机位置）的帧率常不一致，赛事素材必须先统一成 CFR（恒定帧率），再谈事件时间码。",
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/media.py",
+              "line": 1595,
+              "why": "预览代理转码的完整参数"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/references/devices.md",
+              "line": 22,
+              "why": "各类设备素材的归一化处方"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/docs/RENDER.md",
+              "line": 449,
+              "why": "关键帧 1s 与 -t 而非 -to 的理由"
+            }
+          ]
+        },
+        {
+          "id": "atomic-speech",
+          "title": "语音理解能力",
+          "tag": "atomic",
+          "summary": "词级 ASR、VAD（语音活动检测）、说话人分离、声纹，以及必备的幻觉防线",
+          "goal": "访谈剪辑的时间轴就是词时间轴。没有词级时间戳，切点只能靠估算，必然吞字（把词切掉一截）。",
+          "inputs": [
+            "归一化母版音轨"
+          ],
+          "outputs": [
+            "word-level transcript JSON（逐词转写）",
+            "speaker turns（说话人轮换）",
+            "voiceprint 库"
+          ],
+          "atomic": [
+            {
+              "name": "VAD",
+              "impl": "Silero VAD ONNX / FSMN-VAD / auto-editor levels",
+              "note": "FSMN 的 max_single_segment_time v2 用 3000ms，否则 30000ms"
+            },
+            {
+              "name": "静音切除",
+              "impl": "auto-editor threshold=0.14, margin=0.12s,0.10s",
+              "note": "阈值是满刻度的分数（0 到 1），只在响度归一化后有效；--sample-rate 48000 防爆音（咔哒声）"
+            },
+            {
+              "name": "说话人分离",
+              "impl": "pyannote 3.1 / FunASR CAM++ / AssemblyAI 内置",
+              "note": "pyannote 需 HF gated token（申请制令牌）；CAM++ merge_thr 调到 0.82，避免同一个人被拆成两个说话人"
+            },
+            {
+              "name": "声纹库",
+              "impl": "CAM++ speech_campplus_sv_zh-cn 192 维",
+              "note": "ClipTalk 阈值 review .31 / accept .38，库经 AES-GCM 加密"
+            },
+            {
+              "name": "幻觉过滤",
+              "impl": "no_speech_prob>0.6 且 avg_logprob<-1.0 丢弃",
+              "note": "幻觉句是正常语句，正则抓不到，只能用解码器自身置信度"
+            },
+            {
+              "name": "语言守卫",
+              "impl": "language≠en 时硬阻断 *.en 模型",
+              "note": "英文模型不拒绝其他语言，它会静默翻译，这是最像成功的失败"
+            },
+            {
+              "name": "词级反查",
+              "impl": "helpers/find_quote.py 对缓存 transcript 检索",
+              "note": "premiere-agent：比手写 grep 快 50-100 倍且带越界检查"
+            },
+            {
+              "name": "SRT 生成",
+              "impl": "helpers/build_srt.py 按输出时间轴重算",
+              "note": "禁止手写时间戳；偏移 = word.start − segment_start + segment_offset"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "尾词 end 被标晚",
+              "detail": "全上下文 ASR 常把最后一个词的 end 标晚 1-2 秒。据此定片尾会多出一段空镜（没有主体内容的画面），必须回源核对。",
+              "source": "chatmonteur/skills/cutting.md:115"
+            },
+            {
+              "title": "转写没跟着剪过的片子",
+              "detail": "每次剪切后时间轴都会变。用原始素材的 transcript 给粗剪版打字幕，字幕会整体错位。必须转写 draft（剪辑稿）而不是 raw（原始素材）。",
+              "source": "chatmonteur/skills/references/edit-sequence.md:12"
+            }
+          ],
+          "interview": "说话人分离（diarization）是访谈的刚需：先分清谁在说话，再选 take（同一段内容的各次录制）；否则同一问题的多次回答分不开。",
+          "sports": "赛事解说词是弱信号，语音族只用来抓解说情绪峰值，不能当事件真值。",
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/diarize.py",
+              "line": 84,
+              "why": "pyannote 3.1 直调与词级归属投票"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/voiceprint.py",
+              "line": 21,
+              "why": "跨视频声纹识别的模型与阈值"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/chatmonteur/tools/transcribe_whisper.py",
+              "line": 103,
+              "why": "幻觉过滤与语言守卫实现"
+            }
+          ],
+          "children": [
+            {
+              "id": "atomic-word-asr",
+              "title": "词级 ASR 各家对比",
+              "tag": "atomic",
+              "summary": "八套 ASR 实现的部署形态与输出格式差异",
+              "goal": "词级时间戳的质量直接决定切点质量。各家在幻觉、语种、显存、许可证上的表现差异很大，必须按场景选。",
+              "outputs": [
+                "words[] 含 start/end/text/confidence"
+              ],
+              "atomic": [
+                {
+                  "name": "ElevenLabs Scribe",
+                  "impl": "scribe_v1 REST，diarize=true，word 粒度",
+                  "note": "video-use 在用；云端服务，需 API key；时间戳有 50-100ms 漂移，靠 padding（前后留余量）吸收"
+                },
+                {
+                  "name": "Parakeet TDT 0.6B",
+                  "impl": "onnx-asr，EP 阶梯 TensorRT/CUDA/DirectML/CPU",
+                  "note": "premiere-agent 的默认；本地运行；v2 只支持英文，v3 支持多语种，自动路由"
+                },
+                {
+                  "name": "WhisperX",
+                  "impl": "whisperx CLI，small.en，cpu/int8",
+                  "note": "open-edit 的默认档（tier）；对齐后输出词级时间戳，OpenMontage 也在用"
+                },
+                {
+                  "name": "faster-whisper",
+                  "impl": "WhisperModel word_timestamps=True",
+                  "note": "chatmonteur 与 OpenMontage 的免费默认；优先 CUDA float16，不可用则回退 CPU int8"
+                },
+                {
+                  "name": "SenseVoiceSmall",
+                  "impl": "FunASR iic/SenseVoiceSmall",
+                  "note": "ClipTalk 在用；只输出句级时间戳，但带 emotion 与 audio_event 富标签（情绪与声音事件）"
+                },
+                {
+                  "name": "mlx_whisper",
+                  "impl": "mlx-community/whisper-large-v3-turbo",
+                  "note": "video-edit-cli 在用；Apple Silicon 本地运行，开 word_timestamps=True"
+                },
+                {
+                  "name": "whisper.cpp / transformers.js",
+                  "impl": "ggml q5 与 onnx-community timestamped 双轨",
+                  "note": "OpenChatCut 把 repo 与 revision 锁死，并用 sizeBytes 校验文件"
+                },
+                {
+                  "name": "qwen3-asr",
+                  "impl": "本地 0.6b/1.7b 或 DashScope filetrans 云端",
+                  "note": "baocut 支持 remote node（远程节点）；OpenMontage 云端版需要公网可访问的 https audio_url"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "Whisper 被整体弃用",
+                  "detail": "premiere-agent 代码库里根本没有 Whisper 后端：静音幻觉，加上词级时间戳带来的显存回退（占用更多显存），会让长片跑崩。长视频场景优先考虑 Parakeet。",
+                  "source": "premiere-agent/AGENT.md:86"
+                },
+                {
+                  "title": "长源重复循环幻觉",
+                  "detail": "跨窗口的 context 在难解码的段落（音乐、进球回放）塌陷后，同一句话会一直重复到文件结尾。传 --max-context 0 可以切断这种跨窗口传染。",
+                  "source": "montaj/skills/SKILL.md:88"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "premiere-agent",
+                  "path": "premiere-agent/SKILL.md",
+                  "line": 86,
+                  "why": "双 speech lane（语音通道）字节级同构的输出契约"
+                },
+                {
+                  "repo": "video-edit-cli",
+                  "path": "video-edit-cli/src/video_editor/transcription/base.py",
+                  "line": 19,
+                  "why": "唯一干净的 ASR provider Protocol"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "atomic-vision",
+          "title": "视觉理解能力",
+          "tag": "atomic",
+          "summary": "镜头切分、VLM caption（画面描述）、质量分、OCR、人物识别、视觉向量",
+          "goal": "赛事和无对白素材没有文本入口，只能靠视觉建证据层。关键是用稀疏但多视角的采样控制成本。",
+          "inputs": [
+            "归一化母版",
+            "shot 边界"
+          ],
+          "outputs": [
+            "shot list（镜头清单）",
+            "caption 时间线",
+            "visual-embeddings.npy",
+            "person/face 索引"
+          ],
+          "atomic": [
+            {
+              "name": "神经网络镜头切分",
+              "impl": "TransNetV2 PyTorch，输入 27×48×3",
+              "note": "FireRed：阈值 0.5，最短镜头 1000ms，权重放 .storyline/models"
+            },
+            {
+              "name": "像素差镜头切分",
+              "impl": "PySceneDetect ContentDetector 或 ffmpeg scdet",
+              "note": "ffmpeg 用 gt(scene,0.3)；PySceneDetect：人物讲话特写 22、通用 27、录屏 30"
+            },
+            {
+              "name": "VLM caption 本地",
+              "impl": "Florence-2-base <MORE_DETAILED_CAPTION> @1fps",
+              "note": "premiere-agent 用 florence-community 移植版绕开 MS Research License"
+            },
+            {
+              "name": "caption 压缩",
+              "impl": "spaCy 去虚词 + 句级模糊去重 + 静止帧折叠",
+              "note": "merged_timeline token 降 55-60%，缓变帧只出新增句"
+            },
+            {
+              "name": "审美与质量分",
+              "impl": "aes_score 四维 / PIL ImageStat 亮度锐度",
+              "note": "ClipTalk：黑帧 brightness<.08，模糊 sharpness<.025，灰度降到 80×45"
+            },
+            {
+              "name": "OCR",
+              "impl": "PaddleOCR 3.7.0",
+              "note": "ClipTalk 全量档 2FPS，均衡档降 1FPS 并封顶 300 帧；体量与许可需评估"
+            },
+            {
+              "name": "人脸检测识别",
+              "impl": "OpenCV Zoo YuNet + SFace ONNX",
+              "note": "FaceDetectorYN 320×320，score .9，nms .3，topK 5000"
+            },
+            {
+              "name": "人体检测与 ReID",
+              "impl": "YOLOX + YoutuReID ONNX",
+              "note": "ClipTalk 引擎标识 yolox-youtureid-sface-anchor-v3，走独立的 0.25s 密流（每 0.25 秒一帧的密集帧流）"
+            },
+            {
+              "name": "视觉 embedding",
+              "impl": "SigLIP2 / chinese-CLIP / CLIP ViT-B-32 / SigLIP",
+              "note": "frontstage 是唯一端侧按画面搜镜头；模型换版会让索引整体失效"
+            },
+            {
+              "name": "开放词表检测",
+              "impl": "GroundingDINO",
+              "note": "开放词表指可用任意文字描述要检测的目标；ClipTalk box 与 text 同阈值 0.3；可用于赛事器材与球门检测"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "SigLIP 判不了谁在说话",
+              "detail": "通用帧向量只表达画面语义，不含口型与音画对应。用它做 face↔speaker 关联会把人认错，ClipTalk 显式禁止这条推断。",
+              "source": "ClipTalk/app/main.py:8081"
+            },
+            {
+              "title": "人物识别拖垮全局帧率",
+              "detail": "人物识别要求穷尽覆盖，若与视觉 embedding 共用帧流，会把所有视觉任务都拉到 2FPS。ClipTalk 给它单独开一条密流隔离开。",
+              "source": "ClipTalk/app/recognition_pipeline.py:226"
+            }
+          ],
+          "interview": "访谈视觉族只需低频 caption 来找机位（相机位置）切换和空镜（无人物的过渡画面），主战场仍是词时间轴。",
+          "sports": "赛事必须开 OCR 读记分牌与时钟，并用人体 ReID（跨镜头认出同一人）跟踪球员；这是唯一能识别回放的信号。",
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/visual_lane.py",
+              "line": 47,
+              "why": "Florence-2 许可证规避与 1fps 抽帧"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/split_shots.py",
+              "line": 36,
+              "why": "TransNetV2 阈值与最短镜头长度"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/recognition_pipeline.py",
+              "line": 209,
+              "why": "分档抽帧预算的真实注释"
+            }
+          ]
+        },
+        {
+          "id": "atomic-audio-music",
+          "title": "音频事件与音乐",
+          "tag": "atomic",
+          "summary": "CLAP 声音事件、beat/downbeat（节拍与重拍）、能量曲线、ducking 与响度控制",
+          "goal": "赛事高光的第一召回信号是声音；BGM 卡点（让剪辑点对齐节拍）需要 beat 网格。两者都必须在本地运行，而且都只是提示，不是判据。",
+          "inputs": [
+            "母版音轨",
+            "本地 BGM 库"
+          ],
+          "outputs": [
+            "audio events（声音事件）时间线",
+            "beatgrid JSON",
+            "loudness（响度）曲线",
+            "选定 BGM"
+          ],
+          "atomic": [
+            {
+              "name": "CLAP 零样本事件",
+              "impl": "LAION CLAP HTSAT via ONNX Runtime",
+              "note": "premiere-agent 用约 10s 窗口；agent 自写 200-1000 个标签并含负样本（明确不是该类声音），缓存文本向量"
+            },
+            {
+              "name": "SenseVoice 富标签",
+              "impl": "FunASR 输出 emotion 与 audio_event",
+              "note": "ClipTalk 从句级结果里解析，成本几乎为零，可当粗召回（第一遍筛选）"
+            },
+            {
+              "name": "beat / downbeat",
+              "impl": "Beat This ONNX 或 librosa beat_track",
+              "note": "Beat This sr=22050，mel 128，chunk 1500 帧，边界 6 帧丢弃"
+            },
+            {
+              "name": "强拍筛选",
+              "impl": "librosa percussive + 局部归一 + 峰值抑制",
+              "note": "FireRed：top_pct=70, min_sep_beats=1, local_norm_win=8 拍"
+            },
+            {
+              "name": "动态范围",
+              "impl": "librosa RMS 转 dB，P95 减 P10",
+              "note": "动态范围指音量起伏大小；FireRed 用它判断 BGM 是否够激烈；sr=22050, hop=2048"
+            },
+            {
+              "name": "响度曲线",
+              "impl": "ffmpeg -af ebur128 解析 M 值",
+              "note": "OpenMontage 每 100ms 取一个点，能量门限默认 −40 LUFS（响度单位）"
+            },
+            {
+              "name": "静音检测",
+              "impl": "silencedetect n=−36/−40/−45dB:d=0.3~0.5",
+              "note": "各仓库阈值不同；ClipTalk −36dB，video-edit-cli −40dB，review 探针 −45dB"
+            },
+            {
+              "name": "ducking",
+              "impl": "sidechaincompress 由人声做 key",
+              "note": "ducking 指人声出现时自动压低音乐；chatmonteur th=0.05 ratio=2 attack=20 release=700，只压 2-6dB"
+            },
+            {
+              "name": "两遍 loudnorm",
+              "impl": "print_format=json 测量后带 measured_* 应用",
+              "note": "目标 −14 LUFS / −1 dBTP（真峰值）；播客 −16，广播 −23"
+            },
+            {
+              "name": "BGM 语义召回",
+              "impl": "LangChain FAISS + all-MiniLM-L6-v2",
+              "note": "FireRed 用本地模型目录，query_top_n 默认 32，召回后再交 LLM 选唯一一首"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "只看 LUFS 不看真峰",
+              "detail": "做过响度归一化的音频仍可能削顶（音量超上限被截平）。响度合格不等于没有削波，必须同时检查 true peak（真实峰值）。kajisho5 的 check.py 两个都测。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:179"
+            },
+            {
+              "title": "把环境音抬到人声电平",
+              "detail": "测得 −40 LUFS 以下的片段是房间底噪或风声，抬高 25dB 抬的是噪声不是内容。应保留原电平并明确说明。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:180"
+            },
+            {
+              "title": "amix 默认会衰减对白",
+              "detail": "amix 不写 normalize=0 时，每多一层输入对白就被静默衰减约 6dB。混 BGM 必须显式关掉归一化。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:19"
+            }
+          ],
+          "interview": "访谈只需 ducking 与响度处理；beat 网格基本用不上，硬让剪辑点对齐节拍会切碎语义。",
+          "sports": "赛事靠 CLAP 抓欢呼、哨声、击球声；解说能量峰值配合视觉才可信。",
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/README.md",
+              "line": 637,
+              "why": "CLAP lane（通道）的模型与窗口设计"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/select_bgm.py",
+              "line": 220,
+              "why": "强拍筛选的完整参数"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/references/engineering-facts.md",
+              "line": 14,
+              "why": "可直接照抄的 ducking filter 串"
+            }
+          ]
+        },
+        {
+          "id": "atomic-retrieval",
+          "title": "检索与向量存储",
+          "tag": "atomic",
+          "summary": "混合检索、MMR 去重、metadata 硬过滤与素材库规模",
+          "goal": "长视频会产生几千个片段。必须先用检索把候选压到几十个再交 LLM，否则上下文爆炸且中段内容会被丢失。",
+          "inputs": [
+            "caption/transcript/embedding"
+          ],
+          "outputs": [
+            "候选片段列表",
+            "去重后的镜头集"
+          ],
+          "atomic": [
+            {
+              "name": "sqlite-vec 向量表",
+              "impl": "vec0 虚拟表 + 服务端 TopK",
+              "note": "OpenChatCut 在用；打包时要按平台裁剪原生包（含平台编译产物），避免其他平台的包混入"
+            },
+            {
+              "name": "FTS5 全文检索",
+              "impl": "SQLite FTS5 + bm25() 排序",
+              "note": "OpenChatCut：与向量检索并行跑，各出一份排名"
+            },
+            {
+              "name": "混合检索融合",
+              "impl": "RRF 倒数排名融合，RRF_K=60",
+              "note": "OpenChatCut：score += 1/(60+rank)，融合 FTS5 文本与向量视觉"
+            },
+            {
+              "name": "无向量库检索",
+              "impl": "L2 归一化 512 维 + numpy 点积当余弦",
+              "note": "OpenMontage 注释明说几百个候选不需要 FAISS，工程上更省事"
+            },
+            {
+              "name": "MMR 去重",
+              "impl": "(1−λ)·sim(c,seed) − λ·max sim(c,picked)",
+              "note": "MMR（最大边际相关）兼顾相关性与多样性；OpenMontage 默认 diversity=0.3，n=5，candidate_pool=30"
+            },
+            {
+              "name": "自实现 BM25",
+              "impl": "idf=log(1+(N−df+.5)/(df+.5))，长度归一 .25+.75·len/avg",
+              "note": "ClipTalk：limit 默认 24，支持 modality/speaker/exclusion 硬过滤"
+            },
+            {
+              "name": "LLM 语义重排",
+              "impl": "分批 ranking_prompt，rerank_batch_size=16",
+              "note": "ClipTalk：按 semantic_budget 分批，本地召回结果够用就短路（直接跳过）不重排"
+            },
+            {
+              "name": "时间多样化",
+              "impl": "非穷尽模式下按时间打散候选池",
+              "note": "防止候选全部聚在素材某一段，是长视频必备"
+            },
+            {
+              "name": "本地离线 embedding",
+              "impl": "bge-small-en-v1.5 ONNX，33MB",
+              "note": "hyperframes 用它与云端的 text-embedding-3-large 对照使用"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "缺失模态被当成低分",
+              "detail": "没有弹幕或遥测数据不代表这段不精彩。把缺失信号折算成低分会系统性埋没整类素材，应在实际存在的证据上重新分配权重。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:46"
+            },
+            {
+              "title": "模型换版索引全废",
+              "detail": "视觉 embedding 模型或 revision 变化后，旧向量与新查询不在同一空间。ClipTalk 在 manifest（清单）里记模型串，变更即触发索引失效重建。",
+              "source": "ClipTalk/app/main.py:6233"
+            }
+          ],
+          "interview": "访谈检索单位是语义段落，metadata 必须带 speaker，才能按人筛回答。",
+          "sports": "赛事检索要能按球员、比分区间、事件类型过滤，纯向量相似度不够。",
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/server/storage/hybrid-search.ts",
+              "line": 21,
+              "why": "RRF 混合检索的常量与实现"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/lib/corpus.py",
+              "line": 328,
+              "why": "MMR 多样性检索的公式"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/content_search.py",
+              "line": 1113,
+              "why": "自实现 BM25 的评分细节"
+            }
+          ]
+        },
+        {
+          "id": "atomic-editops",
+          "title": "剪辑操作原语",
+          "tag": "atomic",
+          "summary": "trim/concat/speed/fade/reframe/字幕等确定性动作",
+          "goal": "把 LLM 的编辑意图落成一组参数化、可校验、可回放的原语，避免让模型手写 filtergraph（ffmpeg 滤镜表达式串）。",
+          "inputs": [
+            "Timeline IR（时间线中间表示）/ edit plan JSON"
+          ],
+          "outputs": [
+            "渲染任务",
+            "工程文件"
+          ],
+          "atomic": [
+            {
+              "name": "trim",
+              "impl": "kajisho5 cut.py，默认 -c copy，超容差重编码",
+              "note": "--tolerance 默认 0.5s，超了自动转 x264 CRF 18；-1 表示永不重编码"
+            },
+            {
+              "name": "concat",
+              "impl": "先归一到同尺寸/fps/yuv420p/48kHz 再 xfade+acrossfade",
+              "note": "输出时长 = 各段之和 − 转场（镜头过渡）时长 × (n−1)；每段必须长于 2 倍转场时长"
+            },
+            {
+              "name": "speed",
+              "impl": "setpts / atempo；playback_rate 白名单",
+              "note": "ClipTalk 只允许 1.0/1.1/1.25/1.5，完整对白与高潮必须 1.0"
+            },
+            {
+              "name": "fade",
+              "impl": "每个切点 30ms afade 进出",
+              "note": "video-use：不加的话每一刀都有一个可听见的爆音（咔哒声），公式已给全"
+            },
+            {
+              "name": "reframe",
+              "impl": "video-edit-cli reframe/short；montaj crop_spec + auto_reframe",
+              "note": "16:9 硬裁 9:16 会丢掉约 70% 画幅宽度，需要主体跟随（让画面跟着主体走）"
+            },
+            {
+              "name": "overlay",
+              "impl": "setpts=PTS-STARTPTS+T/TB 把 overlay 第 0 帧移到窗口起点",
+              "note": "不写就会在叠加窗口里看到动画的中段画面"
+            },
+            {
+              "name": "subtitle",
+              "impl": "burn（烧像素）或 mux（字幕流）两种模式",
+              "note": "burn 的 font-size 是 libass 脚本单位，SRT 常在 288 高画布上渲染"
+            },
+            {
+              "name": "ducking 与 loudnorm",
+              "impl": "sidechaincompress + 两遍 loudnorm",
+              "note": "响度只在最后一步设一次，中途只能用线性增益"
+            },
+            {
+              "name": "工程导出",
+              "impl": "OTIO 出 FCPXML/xmeml；VectCutAPI 出剪映草稿",
+              "note": "OTIO 出 FCPXML/xmeml；VectCutAPI 出剪映草稿；DaVinci 走 API"
+            },
+            {
+              "name": "时间重映射",
+              "impl": "FCPXML <timeMap> / Premiere Time Remap",
+              "note": "premiere-agent 速度上限 1000%，用于把长时段压成延时（timelapse 快放）画面"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "opacity 轨被静默忽略",
+              "detail": "ffmpeg 通过 colorchannelmixer 施加 alpha，其 aa 选项声明为 double 字面量，不接受表达式。逐帧 opacity 因此在渲染器、预览、抽帧三处都被整条忽略。",
+              "source": "montaj/docs/RENDER.md:190"
+            },
+            {
+              "title": "无损剪切丢视频流",
+              "detail": "seek 点不落在关键帧（可独立解码的帧）时，-c copy（不重编码直接拷贝）裁剪会静默丢掉视频流，或只留下卡住不动的静止画面。工具箱因此把重编码设为剪切的默认路径。",
+              "source": "claude-code-video-toolkit/_internal/reviews/ffmpeg-review.md:68"
+            },
+            {
+              "title": "帧率采样率混拼",
+              "detail": "不同帧率或采样率的文件在一次 cut.py --segments 合并中不重编码地混用会产生音画不同步，必须加 --accurate。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:197"
+            }
+          ],
+          "interview": "访谈最常用 trim + 30ms fade + J/L cut（声音先于或晚于画面切换的剪法）+ 响度；reframe 只在出竖版切片时用。",
+          "sports": "赛事需要慢放、时间重映射和多机位（多台相机）切换；J/L cut 在长时间线上会累积音频漂移。",
+          "refs": [
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/references/scripts.md",
+              "line": 44,
+              "why": "cut 容差与自动重编码规则"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 24,
+              "why": "30ms 音频淡入淡出的完整公式"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/SKILL.md",
+              "line": 113,
+              "why": "trim spec 数据抽象，可作为 IR 参考"
+            }
+          ]
+        },
+        {
+          "id": "atomic-render",
+          "title": "渲染与合成",
+          "tag": "atomic",
+          "summary": "FFmpeg、Remotion、HyperFrames、MoviePy 的分工与确定性",
+          "goal": "编辑工程格式必须高于渲染器。Timeline IR 经 compiler 分别产出各后端任务，换后端不应改变用户工程。",
+          "inputs": [
+            "Timeline IR（时间线中间表示）"
+          ],
+          "outputs": [
+            "final.mp4",
+            "透明 overlay（带透明通道的叠加层）",
+            "预览帧"
+          ],
+          "atomic": [
+            {
+              "name": "FFmpeg 主链",
+              "impl": "libx264 -crf 18 -preset veryslow -movflags +faststart -pix_fmt yuv420p",
+              "note": "yuv420p 是 QuickTime 与多数消费播放器的硬性要求；CRF ±6 约等于码率减半或翻倍"
+            },
+            {
+              "name": "Remotion",
+              "impl": "React 组件化 MG，useCurrentFrame + interpolate",
+              "note": "CSS transition/animation 与 Tailwind 动画类不可 seek（无法跳到任意帧），必须重写"
+            },
+            {
+              "name": "HyperFrames",
+              "impl": "HTML/CSS/GSAP → 确定性 MP4，可 --docker byte-identical",
+              "note": "每帧都是一次全新 seek（随机跳帧）；禁 Date.now、未设种子的 random、repeat:-1"
+            },
+            {
+              "name": "MoviePy",
+              "impl": "CompositeVideoClip 手放少量叠加",
+              "note": "必须显式给 size=(W,H)；VideoFileClip 默认带音频，不调 without_audio 会吞掉 VO（旁白）"
+            },
+            {
+              "name": "浏览器截帧",
+              "impl": "Playwright/Chromium 逐帧截图",
+              "note": "framecraft：单帧 30-50ms，30fps 1080p 约 2-3 倍实时"
+            },
+            {
+              "name": "无损中间容器",
+              "impl": "FFV1 in MKV，-g 1 每帧关键帧",
+              "note": "各步骤之间传递用的无损中间文件；montaj：MKV 需 -cluster_size_limit 2000000 防并发解码报错"
+            },
+            {
+              "name": "透明通道",
+              "impl": "ProRes 4444 yuva444p10le 或 VP9 yuva420p",
+              "note": "两者都需 --image-format=png；浏览器预览只能用 VP9，alpha 无硬件加速"
+            },
+            {
+              "name": "字体处理",
+              "impl": "渲染前 fc-list 验字体存在",
+              "note": "libass/drawtext 缺字形不报错，直接出豆腐块（缺字显示为方块）；FontName 是族名不是文件名"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "预览通过不等于渲染通过",
+              "detail": "Studio 预览看不出逐帧重采样导致的抖动。必须渲染短 MP4 验证，且不能把抖动当作预览瑕疵放行。WebGL 用 --gl=angle 且并发设 1。",
+              "source": "remotion-dev-skills/skills/remotion-maps/techniques/maplibre/references/render-stability.md:61"
+            },
+            {
+              "title": "陈旧分片污染本次渲染",
+              "detail": "上一次失败留下的分片文件会在 compose 阶段引发 FFV1 解码错误。分片目录必须每次开渲前清空，不能依赖遗留文件。",
+              "source": "montaj/docs/RENDER.md:53"
+            },
+            {
+              "title": "忘了 --overwrite 会看错版本",
+              "detail": "重渲时不加 --overwrite，检查的其实是上一版陈旧文件，看起来像改动没生效。durationInFrames 与场景内容不匹配则出现死气。",
+              "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:132"
+            }
+          ],
+          "interview": "访谈成片以 FFmpeg 主链为主，Remotion 只做片头与下三分之一（屏幕底部的信息条）。",
+          "sports": "赛事包装（记分条、数据动画）交 Remotion/HyperFrames，主剪仍走 FFmpeg。",
+          "mg": "分工反转：Remotion/HyperFrames 变主链，FFmpeg 退成编码与混音，不参与画面生成。",
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-core/references/determinism-rules.md",
+              "line": 68,
+              "why": "每帧全新 seek 的确定性根因说明"
+            },
+            {
+              "repo": "n0an-ffmpeg-skill",
+              "path": "n0an-ffmpeg-skill/ffmpeg/SKILL.md",
+              "line": 29,
+              "why": "H.264 默认参数组合"
+            },
+            {
+              "repo": "remotion-dev-skills",
+              "path": "remotion-dev-skills/skills/remotion-render/transparent-videos.md",
+              "line": 19,
+              "why": "透明输出的两套确切参数"
+            }
+          ],
+          "children": [
+            {
+              "id": "atomic-qa",
+              "title": "QA 探针与自检",
+              "tag": "atomic",
+              "summary": "渲染后自动发现黑帧、静音、切词、响度不达标",
+              "goal": "工具执行成功不等于成片正确。必须有确定性探针在交付前抓出机械错误，把人工复核留给创意判断。",
+              "inputs": [
+                "渲染产物",
+                "edit plan"
+              ],
+              "outputs": [
+                "qc.json",
+                "PASS/WARN/FAIL 报告"
+              ],
+              "atomic": [
+                {
+                  "name": "切点双探针",
+                  "impl": "blackdetect=d=0.1 与 silencedetect=n=-45dB:d=0.4",
+                  "note": "video-edit-cli review.py 在每个切点跑，另检测是否切到词中间"
+                },
+                {
+                  "name": "平台合规校验",
+                  "impl": "check.py 对 9 个平台规格打 PASS/WARN/FAIL",
+                  "note": "reels：90s、1080 高、−14±2 LUFS（响度单位）；broadcast：−23±1 LUFS"
+                },
+                {
+                  "name": "成片技术校验",
+                  "impl": "output validate 查流/画布/时长/响度/字幕",
+                  "note": "video-edit-cli 时长容差 0.5s，响度容差 1.5 LU"
+                },
+                {
+                  "name": "端到端真实素材验证",
+                  "impl": "verify.py 跑全工具链出 pass/fail 表",
+                  "note": "覆盖 VFR（可变帧率）、旋转、5.1（环绕声）、HDR10、时钟漂移的素材；--quick 快速档"
+                },
+                {
+                  "name": "计划校验",
+                  "impl": "plan validate 查 schema、引用、区间、顺序",
+                  "note": "同源 clip 必须递增不重叠；重排或重复源素材的计划被拒"
+                },
+                {
+                  "name": "目视复核",
+                  "impl": "画面变过就必须出 contact sheet 人看",
+                  "note": "ffprobe 看不见压在脸上的字幕，探针替代不了看图"
+                },
+                {
+                  "name": "dry-run 通道",
+                  "impl": "所有脚本统一挂 --dry-run，ffprobe 仍真跑",
+                  "note": "kajisho5 在 _common.py 统一注入，契约测试会校验"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "黑帧阈值写成 16",
+                  "detail": "视频是有限范围：纯黑正好是 Y=16 而不是 0，写 <16 永远不会触发。实测品牌深灰 #0B0B0C 是 26，正确阈值是平均亮度 <20，且探测点取 10/35/65/90% 而不是首尾。",
+                  "source": "chatmonteur/skills/references/engineering-facts.md:122"
+                },
+                {
+                  "title": "确定性检查通过就当交付",
+                  "detail": "passed:true 只说明机械检查没发现问题，不代表这一刀剪得对。工具成功与任务完成是两件事，必须另有内容层证据。",
+                  "source": "video-edit-cli/skills/video-edit-cli/references/cut-review.md:23"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "video-edit-cli",
+                  "path": "video-edit-cli/src/video_editor/review.py",
+                  "line": 74,
+                  "why": "黑帧与静音双探针的实际参数"
+                },
+                {
+                  "repo": "kajisho5-ffmpeg-skill",
+                  "path": "kajisho5-ffmpeg-skill/scripts/check.py",
+                  "line": 1,
+                  "why": "9 个平台的交付规格表"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pitfalls",
+      "title": "踩坑经验汇总",
+      "tag": "pitfall",
+      "summary": "从 35 个仓库的规则、事实与反模式文档中提炼的可引用教训",
+      "goal": "这些是别人已经付过代价的错误。逐条带真实文件行号，做产品设计时直接当约束用，不要重新踩一遍。",
+      "inputs": [
+        "各仓库 SKILL.md / engineering-facts / known-issues / prompts"
+      ],
+      "outputs": [
+        "硬规则清单",
+        "QA 检查项",
+        "prompt 约束"
+      ],
+      "atomic": [
+        {
+          "name": "规则出处可追溯",
+          "impl": "每条 pitfall 带 repo/path:line",
+          "note": "避免二手转述失真，实现时可回原文核对"
+        },
+        {
+          "name": "冲突显式记录",
+          "impl": "跨仓建议冲突单列",
+          "note": "大写字幕、aubio、-c copy 三处存在真实分歧"
+        },
+        {
+          "name": "分类可映射到模块",
+          "impl": "七类对应七个能力族",
+          "note": "便于把 pitfall 变成模块级验收用例"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "工具成功不等于完成",
+          "detail": "工具调用返回成功只证明一次编辑操作跑通了。完成需要证据表明成片真实、连贯、技术合格、符合场景目标。时间线看着对但有未上报的工具错误，不算通过。",
+          "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:3"
+        },
+        {
+          "title": "自修必须设轮次上限",
+          "detail": "失败就改、改完再渲、渲完再评的循环，不设上限会一直转下去。video-use 封顶 3 轮自评，open-edit 的机械修复阶梯封顶 2 轮，超了就如实上报而不是继续循环。",
+          "source": "video-use/SKILL.md:99"
+        },
+        {
+          "title": "不要发明没验证的限制",
+          "detail": "写进规则文档的限制会被 Agent 无条件遵守。凭空加一条限制等于从每次运行中删掉真实能力。open-edit 用 probe render 判定每条引擎限制，文档漂移（文档与实现脱节）会让构建失败。",
+          "source": "open-edit/pipeline/director-brief.md:193"
+        },
+        {
+          "title": "手写打分函数不如 LLM",
+          "detail": "分层预计算 codec、tone tag、shot layer 这类工程属于过度设计。LLM 选片好过任何手调启发式；chatmonteur 的朴素语义切除器曾静默删掉 50 秒里的 28 秒。",
+          "source": "video-use/SKILL.md:311"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/skills/references/engineering-facts.md",
+          "line": 1,
+          "why": "全仓库密度最高的实测事实表"
+        },
+        {
+          "repo": "kajisho5-ffmpeg-skill",
+          "path": "kajisho5-ffmpeg-skill/SKILL.md",
+          "line": 174,
+          "why": "看起来对其实错的反模式清单"
+        },
+        {
+          "repo": "video-use",
+          "path": "video-use/SKILL.md",
+          "line": 18,
+          "why": "不可违反的生产正确性硬规则"
+        }
+      ],
+      "children": [
+        {
+          "id": "pit-time",
+          "title": "时间基准与帧",
+          "tag": "pitfall",
+          "summary": "VFR（可变帧率）、seek（跳转）偏差、PTS（显示时间戳）重置、source 与 output 时间混用",
+          "goal": "时间码错一次，后面所有字幕、动效、事件标注全错，而且大多是静默失败。这是整条产线最脆的地方。",
+          "atomic": [
+            {
+              "name": "VFR 判定",
+              "impl": "r_frame_rate 与 avg_frame_rate 比对",
+              "note": "不一致即按 VFR 处理，重编码加 -fps_mode cfr"
+            },
+            {
+              "name": "精确 seek",
+              "impl": "-ss 放在 -i 之后",
+              "note": "montaj 承认代价是长 HEVC 上 5-10 秒，但要的帧就是给的帧"
+            },
+            {
+              "name": "PTS 重置",
+              "impl": "trim 后接 setpts=PTS-STARTPTS",
+              "note": "atrim 后接 asetpts；跳切用 setpts=N/FRAME_RATE/TB"
+            },
+            {
+              "name": "时钟漂移校正",
+              "impl": "kajisho5 sync.py --fix-drift",
+              "note": "在重叠的尾部再测一次偏移，按 ppm（百万分之一）重采样"
+            },
+            {
+              "name": "输出时间轴换算",
+              "impl": "output_time = word.start − segment_start + segment_offset",
+              "note": "video-use 的公式，字幕唯一正确的偏移算法"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "-ss 前后语义完全不同",
+              "detail": "-ss 放在 -i 前是关键帧 seek：H.264 25fps 下关键帧（可独立解码的完整帧）可能每 10 秒才有一个，偏差可达数秒；放在 -i 之后才精确到帧。而且前置 seek 会把输出时间轴重置到裁剪点。",
+              "source": "n0an-ffmpeg-skill/ffmpeg/references/glossary.md:91"
+            },
+            {
+              "title": "前置 seek 加 copy 丢首秒",
+              "detail": "前置 -ss 与 -c:v copy 组合触发 FFmpeg 未修复缺陷（trac 8189），会丢掉输出第一秒；后置 -ss 加 copy 则让切点落在非关键帧上，开头出黑帧。",
+              "source": "n0an-ffmpeg-skill/ffmpeg/references/encoding-and-tuning.md:142"
+            },
+            {
+              "title": "VFR 素材不重编码剪切会卡住开头",
+              "detail": "手机和录屏素材几乎都是 VFR。对它们做 -c copy（不重编码）剪切，文件能播放，但开头画面卡住不动或显示错误的帧。kajisho5 在偏差超 0.5 秒时自动重编码。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:177"
+            },
+            {
+              "title": "不重置 PTS 静默错乱",
+              "detail": "trim/atrim 后不接 setpts=PTS-STARTPTS，concat 会产出错误时长或音频漂移，而且不报错。这是滤镜链最常见的静默失败之一。",
+              "source": "n0an-ffmpeg-skill/ffmpeg/references/glossary.md:56"
+            },
+            {
+              "title": "稀疏关键帧导致切短",
+              "detail": "montaj 记录的真实事故：源片关键帧稀疏使 seek 越过目标，剪辑点被截短。修复方式是归一化预处理把关键帧压到每秒一个，并用 -t 而不是 -to。",
+              "source": "montaj/docs/RENDER.md:547"
+            },
+            {
+              "title": "两套时基同框",
+              "detail": "让合成引擎内嵌讲者视频时，图形跑合成引擎的时钟，烧录层（直接画进画面的字幕）跑视频自身的时钟。两个时基同框正是字幕差半秒的成因，而且静默失败。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:136"
+            },
+            {
+              "title": "转场偏移必须累积",
+              "detail": "每次转场（镜头过渡）都会缩短时间线。xfade 的 offset 必须按已合成长度减去本次转场时长来计算；直接累加原始时长，会在每个接缝多漂一点。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:53"
+            }
+          ],
+          "interview": "访谈的 J/L cut（声音先于或晚于画面切换的剪法）在长时间线上，会因每个 clip 独立吸帧而累积音频漂移，premiere-agent 因此暂缓该功能。",
+          "sports": "赛事多机位（多台相机）来自不同设备，消费级时钟漂移 20-500ppm，一小时可差 1.8 秒，必须先做漂移校正。",
+          "refs": [
+            {
+              "repo": "n0an-ffmpeg-skill",
+              "path": "n0an-ffmpeg-skill/ffmpeg/references/glossary.md",
+              "line": 81,
+              "why": "禁用 -c copy 的完整场景清单"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/SKILL.md",
+              "line": 191,
+              "why": "VFR 检测与自动 CFR 归一"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/docs/CLI.md",
+              "line": 341,
+              "why": "明确选择精确 seek 并承认其代价"
+            }
+          ]
+        },
+        {
+          "id": "pit-asr-sub",
+          "title": "ASR 与字幕",
+          "tag": "pitfall",
+          "summary": "词级时序、幻觉、专名、叠加顺序与单位陷阱",
+          "goal": "访谈剪辑的一切都建在转写上。转写错一处，剪辑、字幕、检索三处同时错，而且用户一眼能看出来。",
+          "atomic": [
+            {
+              "name": "词级 verbatim 强制",
+              "impl": "禁用 SRT/短语模式与 filler 归一化",
+              "note": "verbatim 指逐字转写、不做修饰；句级模式会丢掉次秒级停顿，而停顿正是找切点要用的信号"
+            },
+            {
+              "name": "幻觉置信度门",
+              "impl": "no_speech_prob>0.6 且 avg_logprob<-1.0",
+              "note": "幻觉整体超 20% 应让整轮失败并换更大模型重跑"
+            },
+            {
+              "name": "专名词典",
+              "impl": "asr_fixes.yaml 短语级保标点替换",
+              "note": "品牌名拼错是最响的业余信号，换更大模型解决不了"
+            },
+            {
+              "name": "字幕排版硬指标",
+              "impl": "≤2 行，≤42 字符，≤17 CPS，0.83-7 秒",
+              "note": "chatmonteur 采用 Netflix/BBC 口径，西里尔字母（俄文等）按 37-39 字符"
+            },
+            {
+              "name": "词级对齐门槛",
+              "impl": "字幕词时间与 transcript 偏差 ≤80ms",
+              "note": "hyperframes 把超标做成编译错误而不是警告"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "字幕必须最后叠加",
+              "detail": "字幕在滤镜链里如果排在 overlay（叠加层）之前，就会被它盖住而看不见，且不报错。同一条规则在 video-use、premiere-agent、Ultimate 三处独立出现。",
+              "source": "video-use/SKILL.md:22"
+            },
+            {
+              "title": "画幅变更后再上字幕",
+              "detail": "先烧字幕再 crop/resize，文字会落到画面外。正确顺序是颜色→剪→拼→静音→画幅→字幕叠加→同步→音频→响度→导出。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:183"
+            },
+            {
+              "title": "英文模型静默翻译",
+              "detail": "*.en 模型遇到其他语言不会拒绝，它会翻译。俄语音频配出流畅英文字幕，是最像成功的失败。language 非英语时必须硬阻断。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:36"
+            },
+            {
+              "title": "字幕字号单位不是像素",
+              "detail": "burn（烧进画面）模式的 font-size 是 libass 脚本单位，SRT/VTT 常在 288 单位高的画布上渲染。按像素直觉给 60 和 margin 280，字幕会被推出画布。",
+              "source": "video-edit-cli/skills/video-edit-cli/references/subtitles-and-assets.md:29"
+            },
+            {
+              "title": "多词打包共用时间戳",
+              "detail": "把多个 transcript 词打包进一个字幕条目，第二个词会继承第一个的时间戳提前触发。必须拆成独立词条，换行用 CSS 而不是 br。",
+              "source": "hyperframes/skills/embedded-captions/SKILL.md:240"
+            },
+            {
+              "title": "缺字形直接出豆腐块",
+              "detail": "libass 与 drawtext 缺少字形不会报错，直接渲染成方块。渲染前必须 fc-list 验证字体存在，豆腐块是失败不是风格。Homebrew 精简版 ffmpeg 还缺 subtitles 滤镜。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:218"
+            },
+            {
+              "title": "词级时序缺失就整份拒收",
+              "detail": "完全没有词级时间的 transcript 必须拒收，否则 prep 会把每条 cue（字幕条目）的时间均分给各词，逐词动画整体漂移。个别缺时序的词才允许由邻居插值。",
+              "source": "open-edit/AGENTS.md:181"
+            }
+          ],
+          "interview": "访谈需 verbatim 逐字转写并保留 filler（嗯、啊等语气词）；ASR 把品牌名听成口吃时，自动清理会把真实内容直接删掉。",
+          "sports": "解说音轨底噪大，Whisper 易在回放与音乐段落陷入重复循环幻觉，需传 --max-context 0。",
+          "refs": [
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/subtitles.md",
+              "line": 78,
+              "why": "字幕语义中哪些部分不可脚本化的界定"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 26,
+              "why": "输出时间轴偏移的正确公式"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/embedded-captions/SKILL.md",
+              "line": 88,
+              "why": "静音片段上的 Whisper 幻觉应拒绝而非照做"
+            }
+          ]
+        },
+        {
+          "id": "pit-vision",
+          "title": "视觉理解",
+          "tag": "pitfall",
+          "summary": "抽帧（按固定间隔取画面帧）成本、覆盖度、caption（画面描述）幻觉与审美分误用",
+          "goal": "视觉是长视频里最贵的模态。抽帧策略定错，成本翻几十倍还得不到时序信息。",
+          "atomic": [
+            {
+              "name": "稀疏多视角采样",
+              "impl": "开场/事件峰值/收尾/视觉转折各一帧",
+              "note": "OpenChatCut 每候选最多 6 帧，不用一张缩略图代表整段"
+            },
+            {
+              "name": "固定 VLM 预算",
+              "impl": "时长分档均匀采样 + 事件帧替换",
+              "note": "ClipTalk 用替换而非新增，保持 VLM 调用数恒定"
+            },
+            {
+              "name": "覆盖度断言",
+              "impl": "帧数 <85% 期望或未覆盖尾部即中止",
+              "note": "防止把视频开头的局部结论当成全片结论"
+            },
+            {
+              "name": "caption 真实性约束",
+              "impl": "只描述画面可见内容，禁止联想",
+              "note": "FireRed 与 ClipTalk 都把这条写进 system prompt"
+            },
+            {
+              "name": "caption 压缩",
+              "impl": "spaCy 去虚词 + 静止帧折叠为 same",
+              "note": "缓变帧只输出新增句，像 git diff，省 55-60% token"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "固定抽帧成本爆炸",
+              "detail": "朴素做法把三万帧每帧 1500 token 送进模型，等于 4500 万 token 的噪声。video-use 的等价信息只有 12KB 文本加少数几张 PNG。",
+              "source": "video-use/README.md:89"
+            },
+            {
+              "title": "时间线视图不是扫描工具",
+              "detail": "timeline_view 只应在决策点使用，不能拿来通读全片。当成扫描工具用会把上下文优势立刻抵消掉。",
+              "source": "video-use/SKILL.md:77"
+            },
+            {
+              "title": "一张缩略图代表整段",
+              "detail": "只看一帧就给整个候选区间下结论，会漏掉中段的黑帧、转场（镜头过渡）和内容切换。必须采样开场、事件峰值、收尾与转场四类帧。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:23"
+            },
+            {
+              "title": "联系表时间码会漂",
+              "detail": "contact sheet（缩略图拼成的全片总览图）上标注的时间码，相对真实文件约有 2 秒偏差。据此定切点会系统性偏移，必须回原视频核对。",
+              "source": "chatmonteur/skills/hook-editing.md:32"
+            },
+            {
+              "title": "审美分不等于叙事价值",
+              "detail": "FireRed 的 aes_score 只评画质、光影、构图、稳定性四个客观维度，与这一段是否值得剪进片子无关。两套评分必须分开维护。",
+              "source": "FireRed-OpenStoryline/prompts/tasks/understand_clips/zh/system_detail.md:12"
+            },
+            {
+              "title": "音频标签当成信号",
+              "detail": "CLAP 会把音乐标成语音、锤子标成鼓、房间底噪标成掌声。它只是“值得去看一眼”的提示。CLAP 与视觉冲突时以视觉为准，绝不能只凭标签下刀。",
+              "source": "premiere-agent/SKILL.md:252"
+            },
+            {
+              "title": "烧录字幕只在中段出现",
+              "detail": "源片自带、烧录进画面像素的字幕常只在片子中段出现。只抽 3 帧点检会漏掉它，导致成片叠上第二套字幕。应出 1fps 联系表把全片扫一遍。",
+              "source": "hyperframes/skills/embedded-captions/SKILL.md:89"
+            }
+          ],
+          "interview": "访谈只需低频视觉确认机位（相机位置）与空镜（无人物的画面）；主证据仍是文本，抽帧预算应压到最低。",
+          "sports": "赛事必须提高事件前后时段的抽帧密度，并用 OCR 读记分牌来区分直播与回放。",
+          "refs": [
+            {
+              "repo": "video-use",
+              "path": "video-use/README.md",
+              "line": 89,
+              "why": "固定抽帧成本爆炸的量化对比"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 15,
+              "why": "禁止虚构对白与身份的硬约束"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/AGENT.md",
+              "line": 11,
+              "why": "语音优先、视觉次之、音频事件最末"
+            }
+          ]
+        },
+        {
+          "id": "pit-selection",
+          "title": "LLM 选片",
+          "tag": "pitfall",
+          "summary": "配额规则、峰值误判、幻觉时间码与凑数量",
+          "goal": "选片是整条产线唯一无法用确定性检查兜底的环节。所有约束只能写进 prompt 和校验器。",
+          "atomic": [
+            {
+              "name": "保留配额规则",
+              "impl": "总数 ≤5 不删；否则保留数须严格大于 80% 且不少于 5",
+              "note": "FireRed 先算删除名额再筛内容，名额用完即停"
+            },
+            {
+              "name": "两阶段选片",
+              "impl": "先分层扫描出候选，再对候选精修边界",
+              "note": "避免一次把全库交给 LLM 造成中段内容丢失"
+            },
+            {
+              "name": "时间码合法域",
+              "impl": "只能用联系表实际显示且在 0 到 duration 内的时间码",
+              "note": "编排阶段还须严格落在对应 candidate 的 start/end 内"
+            },
+            {
+              "name": "硬闸门优先",
+              "impl": "闸门失败时高分也不放行",
+              "note": "OpenChatCut 的闸门包括：改变说话人意图、缺 setup/payoff（铺垫/结果兑现）、身份或比分未确认"
+            },
+            {
+              "name": "先做一条再批量",
+              "impl": "新素材或新 profile 先完整做完排名第一的片子",
+              "note": "第一条暴露的评分假设，应回改 rubric（评分细则）后再重排"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "峰值不是高光",
+              "detail": "画面变化热点、声音能量热点只是召回线索。必须从真实音画识别出谁做了什么，否则 keep=false。禁止把检测器名称当作片段标题输出。",
+              "source": "ClipTalk/app/prompts.py:130"
+            },
+            {
+              "title": "一次看全库上下文爆炸",
+              "detail": "窗口太大会丢中间内容与结构精度，太小会丢主题与因果。OpenChatCut 用 overview/candidate/verification 三段分层扫描，时间戳贯穿三段。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:13"
+            },
+            {
+              "title": "幻觉时间码与不存在的片段",
+              "detail": "返修阶段只能引用真实 segmentId/candidateId，禁止自由创造时间范围。调整边界必须落在候选区间内，不低于最短保留时长，不截断语句单元。",
+              "source": "ClipTalk/app/prompts.py:320"
+            },
+            {
+              "title": "凭记忆估算时间戳",
+              "detail": "所有编辑用时间必须来自 transcript JSON 或直接检查媒体，不能凭打包视图里的散文式描述估算。premiere-agent 更进一步禁止手工 grep transcript JSON。",
+              "source": "video-edit-cli/skills/video-edit-cli/references/transcription.md:22"
+            },
+            {
+              "title": "为凑数量降低门槛",
+              "detail": "被拒的候选应得到一条理由而不是一个分数。不能为了达到请求数量而下调阈值，也不能用弱、重复或误导性的片段填数。",
+              "source": "OpenChatCut/src/agent/skills/long-video-to-shorts/references/short-form-selection.md:85"
+            },
+            {
+              "title": "断章取义改变原意",
+              "detail": "引语需要被省略的上下文才成立、反讽被反转、说话人归属错误、拼接后的回答改变含义，这四类都属于事实性错误而非风格问题。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:10"
+            },
+            {
+              "title": "自称读完其实跳读",
+              "detail": "用 grep 代替阅读、中途放弃分块读、把阅读委派给子 Agent、自触发上下文压缩，都是同一种偷懒。premiere-agent 称其为静默烂剪的头号成因。",
+              "source": "premiere-agent/AGENT.md:38"
+            }
+          ],
+          "interview": "访谈默认尊重因果与源时间顺序，只有纯视觉蒙太奇（不靠语言的画面组接）才允许重排。",
+          "sports": "赛事可重排回放顺序，但结果不能先于铺垫出现，且拒绝把回放当直播。",
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/prompts/tasks/filter_clips/zh/system.md",
+              "line": 11,
+              "why": "保留 80% 配额规则的原文"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 224,
+              "why": "编排阶段时间码必须落在候选内"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+              "line": 87,
+              "why": "硬闸门优先于分数的判定原则"
+            }
+          ],
+          "children": [
+            {
+              "id": "pit-sports",
+              "title": "赛事专属坑",
+              "tag": "pitfall",
+              "summary": "回放重复、比分幻觉、开头剧透、从动作中间切入",
+              "goal": "体育与直播是这批仓库覆盖最薄的方向。已有的规则只到指导层，比赛状态系统需要自研。",
+              "atomic": [
+                {
+                  "name": "赛事拒绝清单",
+                  "impl": "比分/球员/队伍错、无铺垫的结果、回放当直播",
+                  "note": "OpenChatCut profile-matrix 里的电竞与体育行"
+                },
+                {
+                  "name": "分段分类",
+                  "impl": "一场直播中途会换品类，逐段分类而非整片一个标签",
+                  "note": "分类必须从可观察到的活动出发，不能看标题和文件名"
+                },
+                {
+                  "name": "连续片段优先",
+                  "impl": "体育、音乐、演示、敏感陈述优先用连续区间",
+                  "note": "拼接会破坏真实性，赛事尤其明显"
+                },
+                {
+                  "name": "分 profile 评测",
+                  "impl": "按品类分开统计而非看全局平均",
+                  "note": "全局平均会掩盖小品类上的系统性失败"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "回放被当成直播",
+                  "detail": "赛事回放与直播画面高度相似，模型容易把同一次进球输出两遍，或把回放当作新事件。需要靠记分牌与时钟 OCR 建立比赛状态才能区分。",
+                  "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:9"
+                },
+                {
+                  "title": "比分与人名幻觉",
+                  "detail": "transcript、OCR、弹幕、模型描述都是可错证据。重要数字与身份必须回源核对，QA 阶段还要再验一次专名、数字、价格、比分、日期与单位。",
+                  "source": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md:131"
+                },
+                {
+                  "title": "弹幕爆发不等于高光",
+                  "detail": "弹幕暴涨只说明注意力集中，不代表质量为正。必须先检查对应的源事件再排名；多视角一致性强于孤立的新奇度尖峰。",
+                  "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:46"
+                },
+                {
+                  "title": "从动作中间切入",
+                  "detail": "开头不能落在明显的动作中段，结尾不能截断仍在发展的动作或表达。冷开场（正片前的高潮前置片段）默认不重复正文区间，严肃内容不许用脱离上下文的金句制造悬念。",
+                  "source": "ClipTalk/app/prompts.py:132"
+                },
+                {
+                  "title": "缺少铺垫直接给结果",
+                  "detail": "电竞与体育的结构是 buildup→decisive play→result→replay/reaction（铺垫→决定性发挥→结果→回放/反应）。缺 setup（铺垫）或 payoff（结果）的候选属于闸门失败，分数再高也不能放行。",
+                  "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:9"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+                  "line": 83,
+                  "why": "按 profile 分开评测的理由"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md",
+                  "line": 8,
+                  "why": "一场直播需逐段分类"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "pit-audio",
+          "title": "音频与音乐",
+          "tag": "pitfall",
+          "summary": "ducking（人声时压低音乐）参数、响度顺序、节拍硬吸附与原声丢失",
+          "goal": "观众对声音瑕疵的容忍度远低于画面。爆音、音乐盖住人声、响度不达标，三者任一都会让成片不可用。",
+          "atomic": [
+            {
+              "name": "语音频段挖坑",
+              "impl": "equalizer f=3000 width=1.6 g=-4 先于 ducking",
+              "note": "清晰度靠腾出 2-4kHz，不是靠压电平；三个来源都说这是最重要的混音规则"
+            },
+            {
+              "name": "轻度 sidechain",
+              "impl": "音乐只下潜 2-6dB，停顿时回升",
+              "note": "绝不压到静音，压没了音乐就变成噪声"
+            },
+            {
+              "name": "响度只设一次",
+              "impl": "在最后一步做两遍 loudnorm",
+              "note": "中途归一化再归一化会让对白过两轮动态压缩"
+            },
+            {
+              "name": "音乐作为连续层",
+              "impl": "剪完再叠，绝不烧进录制链路",
+              "note": "烧进去就会被剪切器切碎"
+            },
+            {
+              "name": "SFX 提前落点",
+              "impl": "比画面帧提前 15ms",
+              "note": "听觉快于视觉，正好压在帧上会被听成迟到"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "amix 默认吞对白",
+              "detail": "amix 不写 normalize=0 时，默认会除以输入数量，每加一层就把对白静默衰减约 6dB。混 BGM 与 SFX（音效）时必须显式关闭。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:19"
+            },
+            {
+              "title": "中途归一化压两遍",
+              "detail": "响度必须只在最后一步设定一次。中途 loudnorm 再在末尾 loudnorm，等于让对白连过两轮动态压缩。文档里明确标注这一行曾把双重归一化写成有意为之。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:21"
+            },
+            {
+              "title": "carve 只挂一个 clip",
+              "detail": "对多个 clip id 分别做 voiceover carve（为旁白在音乐中腾出空间）是错的。后加入的旁白落在 carve 的感知范围之外，垫底音乐就静默地不再为它压低音量。必须把这些 clip 分组后整体 carve。",
+              "source": "hyperframes/skills/hyperframes-audio/SKILL.md:241"
+            },
+            {
+              "title": "beat 硬吸附切碎语义",
+              "detail": "只有音乐与舞蹈才按乐句或节拍边界切，其他内容按固定间隔切会破坏语义。ClipTalk 更进一步禁止对完整对白、关键反应与情绪停顿做变速。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md:108"
+            },
+            {
+              "title": "原声被 shortest 截断",
+              "detail": "amix 的 duration=shortest 只控制音频时长，外层 -shortest 控制最终视频时长。两者混淆会截掉音频或视频。混 BGM 应用 duration=first 加 dropout_transition=2。",
+              "source": "n0an-ffmpeg-skill/ffmpeg/references/advanced-editing.md:47"
+            },
+            {
+              "title": "静音阈值随电平失效",
+              "detail": "auto-editor 的 0.14 是满刻度的分数（0 到 1）。同一素材降 20dB 后测得值差十倍，直接被判成空时间线。安静录制的演示段会被当静音删掉，绝不能盲调阈值。",
+              "source": "chatmonteur/skills/references/engineering-facts.md:30"
+            },
+            {
+              "title": "只映射第一条音轨",
+              "detail": "iPhone 的 mov 带时间码与元数据轨，脚本只映射第一条音轨，重编码时其余轨被丢弃。多机位（多台相机）外录场景要显式处理。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:208"
+            }
+          ],
+          "interview": "访谈中每个章节只铺一条垫底音乐（音乐床），片头片尾的过渡段完全不加音乐。",
+          "sports": "赛事现场声是内容本身，BGM 只能压在下面；卡点（让剪辑点对齐节拍）不能切碎解说的关键句。",
+          "refs": [
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/sound.md",
+              "line": 92,
+              "why": "先 EQ 挖坑（为语音腾出频段）再轻度 ducking 的顺序"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-audio/SKILL.md",
+              "line": 358,
+              "why": "carve 强度的量化刻度"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/music-intelligence/SKILL.md",
+              "line": 32,
+              "why": "节拍层级选择与计划有界性"
+            }
+          ]
+        },
+        {
+          "id": "pit-render",
+          "title": "渲染与合成",
+          "tag": "pitfall",
+          "summary": "非确定性 seek（跳帧）、MoviePy 限制、透明通道与 filtergraph（滤镜表达式）",
+          "goal": "渲染层的失败大多不报错，只是画面不对。必须靠强制目视与逐帧验证兜底。",
+          "atomic": [
+            {
+              "name": "确定性规则",
+              "impl": "禁 Date.now、未播种 random、渲染期网络、repeat:-1",
+              "note": "同一属性被多条时间线驱动时，会因 GSAP 覆盖顺序在两次渲染之间翻转"
+            },
+            {
+              "name": "concat 前归一化",
+              "impl": "统一 fps、pix_fmt、SAR，音频统一 fltp",
+              "note": "跳过这步是 concat 失败或出花屏的头号原因"
+            },
+            {
+              "name": "SAR 锁定",
+              "impl": "pad/scale 链后接 setsar=1:1",
+              "note": "SAR 是像素宽高比；不加锁定，会出现尺寸看着对但画面被拉伸"
+            },
+            {
+              "name": "尺寸必须偶数",
+              "impl": "scale=w=1080:h=-2",
+              "note": "yuv420p 要求宽高可被 2 整除"
+            },
+            {
+              "name": "跨机器可复现",
+              "impl": "hyperframes render --docker",
+              "note": "非 Docker 路径无法保证 byte-identical（逐字节一致）"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "每帧都是全新 seek",
+              "detail": "渲染器没有播放概念，可能乱序或并行采样帧。任何依赖经由前一帧到达的状态（计时器、累积量、事件驱动动画）都会失步。",
+              "source": "hyperframes/skills/hyperframes-core/references/determinism-rules.md:68"
+            },
+            {
+              "title": "地图逐帧重采样抖动",
+              "detail": "每帧调 map.jumpTo 会让 headless 渲染器逐帧重采样贴图，换缓动（easing）或重试 tile（地图瓦片）都无效。必须冻结相机，改用 CSS transform 移动固定 plate（底图）。",
+              "source": "remotion-dev-skills/skills/remotion-maps/techniques/maplibre/references/render-stability.md:7"
+            },
+            {
+              "title": "超采样反而更糊",
+              "detail": "WebGL plate 不能盲目放大 3 倍。1920×1080 放大到 5760px 后，Chromium 可能静默降采样，CSS 缩放时会出现可见像素化。",
+              "source": "remotion-dev-skills/skills/remotion-maps/techniques/maplibre/references/render-stability.md:15"
+            },
+            {
+              "title": "MoviePy 文字被切边",
+              "detail": "moviepy 2.x 的 TextClip(method='label') 有 tight-bbox（紧贴文字的边界框）缺陷，会切掉字母的上下缘。在 Apple Silicon 上会看到字符边缘被削却不知原因，应改用 PIL 渲染透明 PNG。",
+              "source": "claude-code-video-toolkit/.claude/skills/moviepy/SKILL.md:88"
+            },
+            {
+              "title": "MoviePy 静默吞掉配音",
+              "detail": "VideoFileClip 默认加载音频，合成时不调 without_audio 会在 CompositeAudioClip 里静默丢掉旁白。CompositeVideoClip 还必须显式给 size，否则输出尺寸跟随第一个 clip。",
+              "source": "claude-code-video-toolkit/.claude/skills/moviepy/SKILL.md:233"
+            },
+            {
+              "title": "透明 WebM 显示为 yuv420p",
+              "detail": "透明 WebM 在 ffprobe 里显示为 yuv420p，因为 alpha 是 VP9 的旁路通道。据此判断没有透明通道会做出错误结论。",
+              "source": "hyperframes/releases/v0.7.23.md:29"
+            },
+            {
+              "title": "filtergraph 引号被吞",
+              "detail": "-vf 与 -filter_complex 的参数必须用单引号包住，或把表达式内的逗号转义，否则 shell 或 FFmpeg 表达式解析器会吃掉字符。调试第一步应先 ffprobe 看流布局。",
+              "source": "n0an-ffmpeg-skill/ffmpeg/SKILL.md:36"
+            },
+            {
+              "title": "浏览器截帧 2-3 倍实时",
+              "detail": "framecraft 实测：Playwright 单帧约 30-50ms，30fps 1080p 下 5 秒场景需要约 150 张截图，渲染耗时 10-15 秒。长片不能走这条路。",
+              "source": "framecraft/LEARNINGS.md:79"
+            }
+          ],
+          "interview": "访谈成片主要是 trim 加字幕，渲染风险集中在字体与响度，不在动效。",
+          "sports": "赛事包装含大量数据动画与慢放，60fps 降 30fps 对运动画面会明显卡顿。",
+          "mg": "坑集中在浏览器渲染：3D 推进下文字发糊要查栅格化路径（用 CSS zoom 而非 transform scale），不是先调景深。",
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-core/references/determinism-rules.md",
+              "line": 33,
+              "why": "确定性渲染的禁用清单"
+            },
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 13,
+              "why": "十条不可协商的动效规则"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/docs/RENDER.md",
+              "line": 65,
+              "why": "MKV 并发解码损坏的真实报错与修复"
+            }
+          ]
+        },
+        {
+          "id": "pit-protocol",
+          "title": "Agent 写入协议",
+          "tag": "pitfall",
+          "summary": "状态过期、无法撤销、缺 dry-run（试跑）、prompt injection（提示注入）",
+          "goal": "Agent 直接改工程会覆盖用户正在做的修改，且不可逆。写入协议决定这个产品能不能给人用。",
+          "atomic": [
+            {
+              "name": "GET-fresh 合并保存",
+              "impl": "每次保存前重新读工程再合并",
+              "note": "montaj：几分钟前读的 body 会覆盖操作员的并发编辑"
+            },
+            {
+              "name": "dry-run 一等公民",
+              "impl": "cut detect --dry-run、plan validate、validate step",
+              "note": "预览通过再提交，是三个仓库共同的做法"
+            },
+            {
+              "name": "原子 undo",
+              "impl": "批量操作合并成一次 undo 步骤",
+              "note": "OpenChatCut 用 EditorCommands.batch；baocut 有 journal（操作日志）与 undo"
+            },
+            {
+              "name": "不变量成对修改",
+              "impl": "end−start 必须等于 outPoint−inPoint",
+              "note": "只动时间线边不动源点，画面会提前用完并冻在最后一帧"
+            },
+            {
+              "name": "内部控制字段剥离",
+              "impl": "模型传入的 __ 前缀字段一律剥除",
+              "note": "OpenChatCut 防止 prompt injection（提示词注入）绕过付费幂等与预留链"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "陈旧缓存覆盖并发编辑",
+              "detail": "保存工程永远走 GET-fresh 再合并再保存。绝不能用缓存 body 写回，即使刚刚才读过——操作员可能正在同时编辑。",
+              "source": "montaj/skills/_contract/SKILL.md:27"
+            },
+            {
+              "title": "陈旧 transcript 最难发现",
+              "detail": "只剩旧文件名的 transcript 是陈旧的，它的时间戳来自剪切前的文件，与当前 clip 对不上。用它做 overlay（叠加）会全片错位。",
+              "source": "montaj/skills/edit-session/SKILL.md:34"
+            },
+            {
+              "title": "任意 JSON patch 破坏不变量",
+              "detail": "只移动时间线边而不移动源入出点，clip 会被拉长到超过它拥有的素材：画面中途用完并冻结在最后一帧，下面的波形却画出真实的更短长度。",
+              "source": "montaj/skills/edit-session/SKILL.md:63"
+            },
+            {
+              "title": "字幕不跟随主轨",
+              "detail": "删掉 tracks[0] 的一段却不同步删除或平移其中的字幕片段，文字就会与画面脱节。overlay 轨则是绝对时间，剪主轨时不会跟着移动。",
+              "source": "montaj/skills/edit-session/SKILL.md:66"
+            },
+            {
+              "title": "SRT 与指南是不可信输入",
+              "detail": "字幕文件和剪辑指南都属于不可信输入。字幕里出现忽略先前指令一类语句必须无视；指南只取结构化数据（编号、章节名、表格）。",
+              "source": "hajoeun-skills/skills/video-editor/SKILL.md:54"
+            },
+            {
+              "title": "ffprobe 元数据也是注入面",
+              "detail": "只提取 format.duration 与 streams[0] 的 codec_name、width、height，忽略 title、comment、artist 等字段。画面内出现的指令文字同样必须无视。",
+              "source": "hajoeun-skills/skills/video-editor/SKILL.md:61"
+            },
+            {
+              "title": "孤儿会话无法恢复",
+              "detail": "开新会话前必须先 list_edit_sessions。标记 orphaned 的要走 recover；stale、cancelled、failed 是终态不可恢复，只能重开。默认审批模式应为 manual。",
+              "source": "OpenChatCut/skills/openchatcut/references/known-errors.md:26"
+            }
+          ],
+          "interview": "访谈工程迭代次数高，必须有版本化 plan 与 parent_plan 修订链，不能原地改。",
+          "sports": "赛事成片常一次出几十条切片，批量写入必须是单次原子 undo，否则回滚不可行。",
+          "refs": [
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/edit-session/SKILL.md",
+              "line": 50,
+              "why": "纯 JSON 非破坏编辑模型"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/execution-policy-args.verify.ts",
+              "line": 1,
+              "why": "内部控制字段的注入防线"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/docs/adr/0011-intelligence-is-the-agent.md",
+              "line": 13,
+              "why": "计划-审批-执行三段分离的决策记录"
+            }
+          ],
+          "children": [
+            {
+              "id": "pit-license",
+              "title": "许可证与外部依赖",
+              "tag": "pitfall",
+              "summary": "AGPL/GPL、非商用权重、闭源渲染器与无顶层许可证",
+              "goal": "商业产品选型前必须过一遍许可证。这批仓库里有 5 个 AGPL、2 个 GPL、1 个非商用、4 个完全没有许可证文件。",
+              "mg": "MG 动效（Motion Graphics，图形动画）首选的 Remotion 是自定义双层许可：个人、≤3 人公司与非营利免费，更大的营利组织必须买 company license。",
+              "atomic": [
+                {
+                  "name": "AGPL 仓库",
+                  "impl": "codex-chatcut、OpenChatCut、OpenMontage、pireel",
+                  "note": "四个都是 AGPL-3.0，网络服务分发即触发开源义务"
+                },
+                {
+                  "name": "GPL 仓库",
+                  "impl": "frontstage、palmier-pro",
+                  "note": "palmier-pro v0.7.6 之后二进制转专有，仓库只留历史 GPL 源码"
+                },
+                {
+                  "name": "非商用许可",
+                  "impl": "ClipTalk 非商业署名许可证 v1.1",
+                  "note": "覆盖源码、文档、模型权重与配置，商用需另谈"
+                },
+                {
+                  "name": "无顶层许可证",
+                  "impl": "claude-code-plugin、framecraft、hajoeun-skills、premiere-agent、remotion-dev-skills、Ultimate-Video-Editing-Skills",
+                  "note": "无许可证默认保留全部权利，不能直接复用代码"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "库级许可证禁用清单",
+                  "detail": "Ultralytics YOLO 是 AGPL（改用 MediaPipe），essentia 与 aubio 是 AGPL/GPL（改用 librosa），madmom 与 InsightFace 权重非商用。",
+                  "source": "chatmonteur/skills/references/engineering-facts.md:158"
+                },
+                {
+                  "title": "模型权重的隐性授权",
+                  "detail": "premiere-agent 改用 florence-community 的 Florence-2-base 移植版，绕开微软 Research License。pyannote 3.1 是 HF gated（需申请权限）模型，需 token 下载。",
+                  "source": "premiere-agent/helpers/visual_lane.py:47"
+                },
+                {
+                  "title": "Remotion 按公司规模收费",
+                  "detail": "个人与 3 人以下营利组织可免费使用，超过规模需公司许可证。同时禁止复制或修改 Remotion 代码用于销售自己的衍生产品。",
+                  "source": "remotion/LICENSE.md:19"
+                },
+                {
+                  "title": "闭源渲染器与平台限制",
+                  "detail": "open-edit 依赖 VEED 闭源渲染器，只发 macOS-arm64 与 windows-x64 二进制，没有 Intel Mac 与 Linux 版。baocut 的核心 bcut CLI 同样是闭源二进制。",
+                  "source": "open-edit/.claude/skills/open-edit/SKILL.md:78"
+                },
+                {
+                  "title": "云端 Skill 本地无价值",
+                  "detail": "agent-skills（BlitzReels）与 clueso-ai-skills 都只是托管 MCP 的调用说明，本地不含任何引擎。可以借鉴它们的用例拆分方式，但不能当技术方案。",
+                  "source": "clueso-ai-skills/README.md:3"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/LICENSE",
+                  "line": 1,
+                  "why": "非商业署名许可证的适用范围"
+                },
+                {
+                  "repo": "palmier-pro",
+                  "path": "palmier-pro/BINARY_LICENSE.md",
+                  "line": 5,
+                  "why": "v0.7.6 之后二进制转专有"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "repo-map",
+      "title": "仓库地图（37 仓）",
+      "tag": "decision",
+      "summary": "按五个层级给每个仓库定位，标注许可证与对访谈、赛事两侧的价值",
+      "goal": "决定每个仓库是抄思想、抄代码还是直接接入。避免把云端包装层当成技术方案，也避免漏掉唯一实现某个能力的仓库。",
+      "inputs": [
+        "各仓库的 README、SKILL、LICENSE 文件"
+      ],
+      "outputs": [
+        "复用优先级",
+        "许可证风险清单"
+      ],
+      "atomic": [
+        {
+          "name": "分层标准",
+          "impl": "剪辑 Skill/时间线 GUI/制作流水线/成片底座/高光发现",
+          "note": "同一个仓库可以跨层，例如 ClipTalk 既做高光发现也带时间线"
+        },
+        {
+          "name": "价值判定",
+          "impl": "访谈与赛事各打强/中/弱",
+          "note": "赛事侧判为强的只有 ClipTalk、premiere-agent、frontstage"
+        },
+        {
+          "name": "许可证核对",
+          "impl": "逐个读 LICENSE 文件",
+          "note": "其中 5 个用 AGPL、2 个用 GPL、1 个禁止商用、6 个没有许可证文件"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "三份内容完全重复",
+          "detail": "claude-code-plugin、codex-plugin 与 remotion-dev-skills 的 skills 目录逐字重复，且都源自 remotion/packages。只需研究一份，另两份只是分发用的外壳。",
+          "source": "codex-plugin/plugin.json:2"
+        },
+        {
+          "title": "云端包装层看着很全",
+          "detail": "agent-skills 与 clueso-ai-skills 合计近百个 skill，但全部依赖各自的托管 MCP 服务，本地一行代码都跑不了。它们的价值是用例分类法，不是技术实现。",
+          "source": "clueso-ai-skills/README.md:3"
+        },
+        {
+          "title": "有 GUI 不等于有内容理解",
+          "detail": "OpenChatCut、pireel、palmier-pro、frontstage 都有真正的多轨时间线，但除 frontstage 外都没有根据语音转写文本选段的能力。它们是能被 Agent 操作的编辑器，不是自己会剪辑的 Agent。",
+          "source": "OpenChatCut/README.md:66"
+        },
+        {
+          "title": "赛事方向整体缺位",
+          "detail": "35 个仓库里没有一个实现完整的比赛状态系统。ClipTalk 有通用事件高光骨架，premiere-agent 有 CLAP 音频事件，其余都只停留在指导文档层面。这一块必须自研。",
+          "source": "research/claim-source-ledger.md:44"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "research",
+          "path": "research/claim-source-ledger.md",
+          "line": 5,
+          "why": "每个仓库各项判断的来源与访问说明"
+        },
+        {
+          "repo": "research",
+          "path": "video-agents.md",
+          "line": 5,
+          "why": "三层分类的原始表格"
+        }
+      ],
+      "children": [
+        {
+          "id": "layer-skill-cli",
+          "title": "剪辑 Skill 与 CLI",
+          "tag": "decision",
+          "summary": "这一层没有时间线界面，Agent 直接对着文件夹干活，交付 final.mp4 或工程文件",
+          "goal": "这一层是我们最直接的参考。它们已经验证了 transcript-first（转写优先）、plan-then-execute（先出方案再执行）、确定性校验这三个模式。",
+          "atomic": [
+            {
+              "name": "transcript-first",
+              "impl": "video-use 打包转写视图",
+              "note": "LLM 只读文本不看像素，12KB 文本替代 4500 万 token 的视频"
+            },
+            {
+              "name": "plan 然后执行",
+              "impl": "chatmonteur / video-edit-cli / montaj",
+              "note": "智能决策归 Agent，执行归确定性工具，中间隔一份可审阅的 plan"
+            },
+            {
+              "name": "结构化工具契约",
+              "impl": "kajisho5 的机器可读 contract + 21 个工具",
+              "note": "不让 Agent 拼 shell 字符串，每个工具都声明所需的 filter/encoder"
+            },
+            {
+              "name": "输出专业剪辑语汇",
+              "impl": "premiere-agent 出 FCPXML/xmeml",
+              "note": "支持 J/L cut（声音先入或延后的剪法）、溶解（渐变过渡）、时间重映射，把剪辑权交回用户"
+            },
+            {
+              "name": "纯函数 SDK",
+              "impl": "video-edit-tools 全部返回 Result 永不抛异常",
+              "note": "相同输入必得相同输出，适合当执行层，但能力面窄"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "纯 Bash 方案靠音量判断",
+              "detail": "video-editing-skill 只有 6 个 Bash 脚本，切点完全按音量阈值判断。对访谈勉强可用，对赛事音轨基本失效，因为赛场从来不安静。",
+              "source": "video-editing-skill/SKILL.md:92"
+            },
+            {
+              "title": "知识型 Skill 没有执行契约",
+              "detail": "Ultimate-Video-Editing-Skills 覆盖面很广，但没有脚本、没有验证、没有流程，是一本手册不是一个系统。它的价值是剪辑判断知识，不是可运行的能力。",
+              "source": "Ultimate-Video-Editing-Skills/skills/ultimate-video-editor/SKILL.md:113"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 112,
+              "why": "打包转写视图的具体格式"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/SKILL.md",
+              "line": 10,
+              "why": "probe-edit-check-verify 的强制执行顺序"
+            }
+          ],
+          "children": [
+            {
+              "id": "repo-video-use",
+              "title": "video-use",
+              "tag": "decision",
+              "summary": "转写优先与自我评审闭环的方法论源头，premiere-agent 的思想母本",
+              "goal": "定位：Claude Code 剪辑 Skill，LLM 读打包好的转写文本剪出成片。LICENSE：MIT。访谈强，赛事弱。局限：以语音为唯一入口，依赖 ElevenLabs key，素材没有对白就失效。",
+              "refs": [
+                {
+                  "repo": "video-use",
+                  "path": "video-use/SKILL.md",
+                  "line": 18,
+                  "why": "12 条不可违反的生产正确性规则"
+                },
+                {
+                  "repo": "video-use",
+                  "path": "video-use/SKILL.md",
+                  "line": 306,
+                  "why": "反模式清单，明确反对手写打分函数"
+                }
+              ],
+              "urls": [
+                "https://github.com/browser-use/video-use"
+              ]
+            },
+            {
+              "id": "repo-chatmonteur",
+              "title": "chatmonteur",
+              "tag": "decision",
+              "summary": "把剪辑经验固化成会拒绝不合格方案的质量门与实测事实表",
+              "goal": "定位：人物讲话特写（talking-head）场景的 Agent 编排剪辑工作室，无时间线。LICENSE：MIT。访谈强，赛事弱。局限：v0.1 版本，单一场景，全程以语音为轴，无画面事件检测。",
+              "refs": [
+                {
+                  "repo": "chatmonteur",
+                  "path": "chatmonteur/skills/references/engineering-facts.md",
+                  "line": 1,
+                  "why": "带实测日期的工程事实表，密度最高"
+                },
+                {
+                  "repo": "chatmonteur",
+                  "path": "chatmonteur/skills/cutting.md",
+                  "line": 12,
+                  "why": "静音切除的规范流程与硬规则"
+                }
+              ],
+              "urls": [
+                "https://github.com/ArtCog/chatmonteur"
+              ]
+            },
+            {
+              "id": "repo-open-edit",
+              "title": "open-edit",
+              "tag": "decision",
+              "summary": "字幕工业化知识与确定性 recipe 校验门，VEED 出品",
+              "goal": "定位：Agent 驱动的剪辑流水线，明确无 GUI 无时间线。LICENSE：Apache-2.0。访谈中，赛事弱。局限：渲染器是 VEED 闭源二进制，只发布 macOS-arm64 与 win-x64 版本。",
+              "refs": [
+                {
+                  "repo": "open-edit",
+                  "path": "open-edit/pipeline/director-brief.md",
+                  "line": 185,
+                  "why": "缺少词级时间戳时的降级规则"
+                },
+                {
+                  "repo": "open-edit",
+                  "path": "open-edit/docs/FLOW.md",
+                  "line": 30,
+                  "why": "lint-verify-record-probe 流程的机械修复阶梯"
+                }
+              ],
+              "urls": [
+                "https://github.com/veedstudio/open-edit"
+              ]
+            },
+            {
+              "id": "repo-video-edit-cli",
+              "title": "video-edit-cli",
+              "tag": "decision",
+              "summary": "播客长录像精剪的最轻依赖参考，只依赖 FFmpeg 和 ffprobe",
+              "goal": "定位：Python CLI 加 Skill，专攻播客与演讲长录像转成片和竖屏切片。LICENSE：MIT。访谈价值强，赛事价值弱。局限：纯转写驱动，无画面事件检测，素材没有对白就基本无用。",
+              "refs": [
+                {
+                  "repo": "video-edit-cli",
+                  "path": "video-edit-cli/skills/video-edit-cli/references/edit-plan.md",
+                  "line": 28,
+                  "why": "plan 校验的拒绝规则"
+                },
+                {
+                  "repo": "video-edit-cli",
+                  "path": "video-edit-cli/src/video_editor/review.py",
+                  "line": 74,
+                  "why": "切点自检的双探针参数"
+                }
+              ],
+              "urls": [
+                "https://github.com/computerlovetech/video-edit-cli"
+              ]
+            },
+            {
+              "id": "repo-kajisho5",
+              "title": "kajisho5-ffmpeg-skill",
+              "tag": "decision",
+              "summary": "21 个结构化 FFmpeg 工具与最完整的交付前合规校验",
+              "goal": "定位：把 FFmpeg 包成带类型参数的工具与 MCP server。LICENSE：MIT。访谈价值强（去静音、多台相机、时钟漂移校正、响度），赛事价值中。局限：纯执行层，无任何内容理解与创意决策。",
+              "refs": [
+                {
+                  "repo": "kajisho5-ffmpeg-skill",
+                  "path": "kajisho5-ffmpeg-skill/SKILL.md",
+                  "line": 174,
+                  "why": "看起来对、其实错的反模式清单"
+                },
+                {
+                  "repo": "kajisho5-ffmpeg-skill",
+                  "path": "kajisho5-ffmpeg-skill/references/devices.md",
+                  "line": 8,
+                  "why": "各类真实设备素材的处理配方表"
+                }
+              ],
+              "urls": [
+                "https://github.com/kajisho5/ffmpeg-skill"
+              ]
+            },
+            {
+              "id": "repo-n0an",
+              "title": "n0an-ffmpeg-skill",
+              "tag": "decision",
+              "summary": "最好用的 FFmpeg 命令与陷阱速查，纯文档、零代码",
+              "goal": "定位：分类整理的 FFmpeg 命令配方（recipe）知识库。LICENSE：MIT。访谈价值弱，赛事价值弱。局限：只是速查表（cheatsheet）不是工具，不做任何验证，也没有工作流。",
+              "refs": [
+                {
+                  "repo": "n0an-ffmpeg-skill",
+                  "path": "n0an-ffmpeg-skill/ffmpeg/references/glossary.md",
+                  "line": 81,
+                  "why": "禁用 -c copy 的完整场景清单"
+                },
+                {
+                  "repo": "n0an-ffmpeg-skill",
+                  "path": "n0an-ffmpeg-skill/ffmpeg/references/encoding-and-tuning.md",
+                  "line": 130,
+                  "why": "input seek 会重置输出时间轴"
+                }
+              ],
+              "urls": [
+                "https://github.com/n0an/ffmpeg-skill"
+              ]
+            },
+            {
+              "id": "repo-montaj",
+              "title": "montaj",
+              "tag": "decision",
+              "summary": "trim spec（裁剪规格）数据抽象与最详尽的渲染工程踩坑记录",
+              "goal": "定位：CLI-first 的 Agent 剪辑工具箱，作者称 CLIP。LICENSE：MIT。访谈价值强，赛事价值中。局限：明确声明没有 Agent 就不能用，创意决策全部交给 Agent。",
+              "refs": [
+                {
+                  "repo": "montaj",
+                  "path": "montaj/skills/SKILL.md",
+                  "line": 113,
+                  "why": "trim spec 架构，可作为 Timeline IR 参考"
+                },
+                {
+                  "repo": "montaj",
+                  "path": "montaj/docs/RENDER.md",
+                  "line": 53,
+                  "why": "渲染管线的真实故障与修复记录"
+                }
+              ],
+              "urls": [
+                "https://github.com/theSamPadilla/montaj"
+              ]
+            },
+            {
+              "id": "repo-video-edit-tools",
+              "title": "video-edit-tools",
+              "tag": "decision",
+              "summary": "零系统依赖的确定性剪辑 SDK，可当纯执行层",
+              "goal": "定位：TypeScript 剪辑 SDK 加 MCP server，自带 ffmpeg 二进制。LICENSE：MIT。访谈弱，赛事弱。局限：能力停在 trim/resize/addText 级别，没有转写也没有选段。",
+              "refs": [
+                {
+                  "repo": "video-edit-tools",
+                  "path": "video-edit-tools/README.md",
+                  "line": 13,
+                  "why": "永不抛异常的 Result API 设计原则"
+                }
+              ],
+              "urls": [
+                "https://github.com/swimmingkiim/video-edit-tools"
+              ]
+            },
+            {
+              "id": "repo-video-editing-skill",
+              "title": "video-editing-skill",
+              "tag": "decision",
+              "summary": "纯 Bash 六脚本的极简基线，用来看能力下限",
+              "goal": "定位：Bash 加 FFmpeg 的固定操作链，本地 Whisper 出 SRT 字幕。LICENSE：MIT。访谈价值中，赛事价值弱。局限：全部按音量阈值而不是语义判断，能力非常基础。",
+              "refs": [
+                {
+                  "repo": "video-editing-skill",
+                  "path": "video-editing-skill/SKILL.md",
+                  "line": 92,
+                  "why": "Agent 调用这些脚本的方式"
+                }
+              ],
+              "urls": [
+                "https://github.com/6missedcalls/video-editing-skill"
+              ]
+            },
+            {
+              "id": "repo-hajoeun",
+              "title": "hajoeun-skills",
+              "tag": "decision",
+              "summary": "「SRT 即时间线」的思路，以及最完整的输入不可信防线",
+              "goal": "定位：三个小 Skill，分别做录屏 debug、SRT 驱动剪辑、YouTube 六阶段流程。无顶层 LICENSE 文件。访谈价值中，赛事价值弱。局限：三个 Skill 都很浅，更像个人工具集。",
+              "refs": [
+                {
+                  "repo": "hajoeun-skills",
+                  "path": "hajoeun-skills/skills/video-editor/SKILL.md",
+                  "line": 54,
+                  "why": "把 SRT 与指南当作不可信输入的处理规则"
+                },
+                {
+                  "repo": "hajoeun-skills",
+                  "path": "hajoeun-skills/skills/video-editor/SKILL.md",
+                  "line": 65,
+                  "why": "SRT 到 FFmpeg 的切分流程"
+                }
+              ],
+              "urls": [
+                "https://github.com/hajoeun/skills"
+              ]
+            },
+            {
+              "id": "repo-uves",
+              "title": "Ultimate-Video-Editing",
+              "tag": "decision",
+              "summary": "剪辑判断知识的百科，J/L cut（声音先入或延后）何时用讲得最清楚",
+              "goal": "定位：超大号剪辑知识 Skill，单文件分多个 PART。无顶层 LICENSE 文件。访谈价值中，赛事价值中（节奏与渐变变速技巧）。局限：是手册不是系统，无脚本无验证无流程。",
+              "refs": [
+                {
+                  "repo": "Ultimate-Video-Editing-Skills",
+                  "path": "Ultimate-Video-Editing-Skills/skills/ultimate-video-editor/SKILL.md",
+                  "line": 113,
+                  "why": "各类剪辑手法的适用场景"
+                }
+              ],
+              "urls": [
+                "https://github.com/Rajbharti06/Ultimate-Video-Editing-Skills"
+              ]
+            },
+            {
+              "id": "repo-ai-video-editing-skill",
+              "title": "ai-video-editing-skill",
+              "tag": "decision",
+              "summary": "中文 Vlog 三维分析法，踩坑清单比主流程更有价值",
+              "goal": "定位：旅行 Vlog 全自动剪辑 Skill，从画面、语音、音量三个维度打分。LICENSE：MIT。访谈价值弱，赛事价值中。局限：与旅行 Vlog 强绑定，无逐句删改，也不支持多台相机。",
+              "refs": [
+                {
+                  "repo": "ai-video-editing-skill",
+                  "path": "ai-video-editing-skill/SKILL.md",
+                  "line": 153,
+                  "why": "24 条实战反模式，本仓库最有价值的部分"
+                }
+              ],
+              "urls": [
+                "https://github.com/znyupup/ai-video-editing-skill"
+              ]
+            },
+            {
+              "id": "repo-baocut",
+              "title": "baocut",
+              "tag": "decision",
+              "summary": "显式分离 source/output/media 三套时钟，字幕工程做得最细",
+              "goal": "定位：BaoCut 桌面应用的 Agent Skill，驱动本地 bcut CLI。LICENSE：MIT。访谈中，赛事弱。局限：核心 CLI 是闭源二进制，能力边界由厂商决定。",
+              "refs": [
+                {
+                  "repo": "baocut",
+                  "path": "baocut/skills/baocut/references/editing.md",
+                  "line": 14,
+                  "why": "禁止自行在三套时钟间换算"
+                },
+                {
+                  "repo": "baocut",
+                  "path": "baocut/skills/baocut/references/editing.md",
+                  "line": 17,
+                  "why": "journal 与 undo/redo/restore 的使用规则"
+                }
+              ],
+              "urls": [
+                "https://github.com/jimliu/baocut"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer-timeline-gui",
+          "title": "时间线 GUI 编辑器",
+          "tag": "decision",
+          "summary": "人和 Agent 修改同一条时间线，共享同一个 undo 栈",
+          "goal": "决定时间线的唯一事实来源放在哪里：代码、工程 JSON、还是原生应用状态。这直接决定我们的 Timeline IR 设计。",
+          "atomic": [
+            {
+              "name": "共享 undo 栈",
+              "impl": "frontstage 43 个 MCP 工具与 GUI 同栈",
+              "note": "Agent 的批量修改也是一次可撤销步骤"
+            },
+            {
+              "name": "代码即工程",
+              "impl": "editor 用 SolidJS 模块作为文档源",
+              "note": "画布（canvas）与代码双向同步，Agent 永远看得到最新版本"
+            },
+            {
+              "name": "端侧视觉检索",
+              "impl": "frontstage 本地 SigLIP 按画面内容搜素材",
+              "note": "这批仓库里唯一的本地视觉检索实现"
+            },
+            {
+              "name": "proposal 预演",
+              "impl": "OpenChatCut 先出 proposal 用户批准后 apply",
+              "note": "codex-chatcut 复用同一套原生 undo 机制"
+            },
+            {
+              "name": "工程可继续编辑",
+              "impl": "输出的是工程不是一次性成片",
+              "note": "OpenChatCut 与 ai-video-editor 都强调这点"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "有编辑器不代表会剪辑",
+              "detail": "这一层大多是能被 Agent 操作的编辑器，智能部分要自己带。OpenChatCut 没有根据转写文本选段和删填充词（「嗯」「啊」等口头禅）的能力，接进来还得自己实现内容层。",
+              "source": "OpenChatCut/README.md:66"
+            },
+            {
+              "title": "平台覆盖普遍残缺",
+              "detail": "frontstage 桌面版只有 Windows 且未签名，palmier-pro 只支持 macOS Tahoe 加 Apple Silicon 且已闭源，editor 只发布 macOS Apple Silicon 二进制。",
+              "source": "palmier-pro/README.md:1"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "frontstage",
+              "path": "frontstage/README.md",
+              "line": 32,
+              "why": "MCP 与 GUI 共享 undo 栈的设计"
+            },
+            {
+              "repo": "editor",
+              "path": "editor/README.md",
+              "line": 58,
+              "why": "SolidJS 模块作为文档源"
+            }
+          ],
+          "children": [
+            {
+              "id": "repo-openchatcut",
+              "title": "OpenChatCut",
+              "tag": "decision",
+              "summary": "把 Agent 输出变成可继续编辑的工程，且有最好的直播剪辑知识包",
+              "goal": "定位：本地优先的 Electron 多轨时间线编辑器，内置 Agent 并暴露 MCP。LICENSE：AGPL-3.0。访谈中，赛事中。局限：没有内容理解能力，AGPL 约束商业分发。",
+              "refs": [
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+                  "line": 9,
+                  "why": "电竞与体育的信号与拒绝条件"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/server/storage/hybrid-search.ts",
+                  "line": 21,
+                  "why": "RRF 混合检索的实现"
+                }
+              ],
+              "urls": [
+                "https://github.com/0xsline/OpenChatCut"
+              ]
+            },
+            {
+              "id": "repo-frontstage",
+              "title": "frontstage",
+              "tag": "decision",
+              "summary": "唯一的本地 SigLIP 视觉检索，加 43 个与 GUI 共享 undo 栈的 MCP 工具",
+              "goal": "定位：Web 加 Windows 桌面的多轨时间线编辑器。LICENSE：GPL-3.0。访谈价值强（词级字幕加删填充词），赛事价值强（按画面内容搜镜头）。局限：桌面版只有 Windows 且未签名。",
+              "refs": [
+                {
+                  "repo": "frontstage",
+                  "path": "frontstage/README.md",
+                  "line": 32,
+                  "why": "43 个 MCP 工具与共享 undo 栈"
+                }
+              ],
+              "urls": [
+                "https://github.com/x777/frontstage"
+              ]
+            },
+            {
+              "id": "repo-editor",
+              "title": "editor",
+              "tag": "decision",
+              "summary": "剪辑与代码双向同步，长视频高光与引语检索是原生用例",
+              "goal": "定位：Agent-first 桌面与网页编辑器，SolidJS 代码即工程。LICENSE：MPL-2.0。访谈强，赛事中。局限：桌面版只发 macOS Apple Silicon，自研运行时学习成本高。",
+              "refs": [
+                {
+                  "repo": "editor",
+                  "path": "editor/README.md",
+                  "line": 58,
+                  "why": "代码作为文档源的架构说明"
+                }
+              ],
+              "urls": [
+                "https://github.com/diffusionstudio/editor"
+              ]
+            },
+            {
+              "id": "repo-pireel",
+              "title": "pireel",
+              "tag": "decision",
+              "summary": "Skill 管判断、Frame 管视听设计的职责分离",
+              "goal": "定位：画布（canvas）加时间线的开源 AI 编辑器，三种编辑方式并存。LICENSE：AGPL-3.0。访谈中，赛事弱。局限：开源版砍掉了内置 Chat，联网服务要上托管版。",
+              "refs": [
+                {
+                  "repo": "pireel",
+                  "path": "pireel/README.md",
+                  "line": 36,
+                  "why": "三种编辑方式并存的定位"
+                }
+              ],
+              "urls": [
+                "https://github.com/pireel/pireel"
+              ]
+            },
+            {
+              "id": "repo-palmier-pro",
+              "title": "palmier-pro",
+              "tag": "decision",
+              "summary": "Swift 原生时间线加本地 MCP，但新版已转闭源",
+              "goal": "定位：macOS 原生多轨时间线编辑器，本地 MCP 端口 19789。LICENSE：GPL-3.0 历史源码，v0.7.6 后二进制专有。访谈中，赛事弱。局限：已闭源且仅支持 Apple Silicon。",
+              "refs": [
+                {
+                  "repo": "palmier-pro",
+                  "path": "palmier-pro/BINARY_LICENSE.md",
+                  "line": 5,
+                  "why": "新版二进制转专有的声明"
+                }
+              ],
+              "urls": [
+                "https://github.com/palmier-io/palmier-pro"
+              ]
+            },
+            {
+              "id": "repo-ai-video-editor",
+              "title": "ai-video-editor",
+              "tag": "decision",
+              "summary": "浏览器内跑完整链路，Skill 写出可验证的 timeline 文件",
+              "goal": "定位：浏览器多轨时间线编辑器，WASM ffmpeg 加本地 Whisper。LICENSE：MIT。访谈价值中，赛事价值弱。局限：浏览器沙箱内处理一小时以上素材性能吃紧。",
+              "refs": [
+                {
+                  "repo": "ai-video-editor",
+                  "path": "ai-video-editor/skills/edit-timeline-studio/SKILL.md",
+                  "line": 92,
+                  "why": "Agent 能力边界的显式声明"
+                }
+              ],
+              "urls": [
+                "https://github.com/MartinDelophy/ai-video-editor"
+              ]
+            },
+            {
+              "id": "repo-codex-chatcut",
+              "title": "codex-chatcut",
+              "tag": "decision",
+              "summary": "只做 Codex 到 OpenChatCut 的方案（proposal）桥接",
+              "goal": "定位：把 OpenChatCut 钉在某个 commit 上打 patch 的 sidecar 胶水层。LICENSE：AGPL-3.0。访谈弱，赛事弱。局限：自身零剪辑能力，钉死上游 commit 会逐渐腐化。",
+              "refs": [
+                {
+                  "repo": "codex-chatcut",
+                  "path": "codex-chatcut/UPSTREAM.json",
+                  "line": 1,
+                  "why": "钉住的上游 commit 与 patch 摘要"
+                }
+              ],
+              "urls": [
+                "https://github.com/francize/codex-chatcut"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer-pipeline",
+          "title": "想法到成片流水线",
+          "tag": "decision",
+          "summary": "从选题到成片，剪只是其中一站",
+          "goal": "这一层的价值是编排与治理：阶段产物、来源追溯（provenance）、审批门、成本追踪，而不是它们的生成能力。",
+          "atomic": [
+            {
+              "name": "阶段产物与来源追溯",
+              "impl": "OpenMontage 每阶段落盘且可追溯",
+              "note": "配合 Backlot 看板实时展示阶段与花费"
+            },
+            {
+              "name": "节点链编排",
+              "impl": "FireRed-OpenStoryline 的 core_nodes",
+              "note": "split_shots、understand_clips、filter_clips、select_bgm"
+            },
+            {
+              "name": "角色化 artifact 归属",
+              "impl": "video-agent-skills 11 个角色 Skill",
+              "note": "producer 负责编排，设 4 个人工审核检查点，用 project.json 断点恢复"
+            },
+            {
+              "name": "章节级重生成",
+              "impl": "llm-video-maker 按 chapter 局部重做",
+              "note": "中间产物全部保留，可断点续跑（resume）"
+            },
+            {
+              "name": "参考片反推方案",
+              "impl": "OpenMontage 从参考视频给 2-3 个方案加成本预估",
+              "note": "还能检索到真实的动态镜头，而不只是图片动画"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "生成式流水线不吃长素材",
+              "detail": "这一层假设的输入是一个主题加网络素材，不是一段两小时的原片。FireRed、OpenMontage、claude-code-video-toolkit 都做加法不做减法，直接套用会走错方向。",
+              "source": "FireRed-OpenStoryline/README.md:46"
+            },
+            {
+              "title": "摊子大导致跑通成本高",
+              "detail": "OpenMontage 需要 Blender 加多个云 provider，claude-code-video-toolkit 需要自部署云 GPU 加 R2 加音色。跑通一次的成本远高于借鉴它们编排思想的收益。",
+              "source": "OpenMontage/skills/INDEX.md:130"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/README.md",
+              "line": 46,
+              "why": "五条核心能力的界定"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/INDEX.md",
+              "line": 130,
+              "why": "13 条流水线的索引"
+            }
+          ],
+          "children": [
+            {
+              "id": "repo-firered",
+              "title": "FireRed-OpenStoryline",
+              "tag": "decision",
+              "summary": "最接近目标产线的端到端节点链，本地 BGM 分析可直接抄",
+              "goal": "定位：对话式完整成片流水线，从主题到成片。LICENSE：Apache-2.0。访谈价值弱，赛事价值弱，但节点链与 BGM 分析价值强。局限：面向内容生产而不是素材精剪，假设的输入是主题加网络素材。",
+              "refs": [
+                {
+                  "repo": "FireRed-OpenStoryline",
+                  "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/select_bgm.py",
+                  "line": 220,
+                  "why": "强拍筛选与动态范围的完整实现"
+                },
+                {
+                  "repo": "FireRed-OpenStoryline",
+                  "path": "FireRed-OpenStoryline/prompts/tasks/filter_clips/zh/system.md",
+                  "line": 11,
+                  "why": "保留 80% 配额规则原文"
+                }
+              ],
+              "urls": [
+                "https://github.com/FireRedTeam/FireRed-OpenStoryline"
+              ]
+            },
+            {
+              "id": "repo-openmontage",
+              "title": "OpenMontage",
+              "tag": "decision",
+              "summary": "生产治理与 MMR 检索优先的素材库，阶段产物全可追溯",
+              "goal": "定位：完整 agentic 成片系统，13 条 YAML pipeline。LICENSE：AGPL-3.0。访谈中，赛事中。局限：AGPL 加 Blender 加多个云 provider，摊子极大，跑通成本高。",
+              "refs": [
+                {
+                  "repo": "OpenMontage",
+                  "path": "OpenMontage/lib/corpus.py",
+                  "line": 328,
+                  "why": "MMR 多样性检索公式"
+                },
+                {
+                  "repo": "OpenMontage",
+                  "path": "OpenMontage/tools/audio/audio_mixer.py",
+                  "line": 411,
+                  "why": "sidechaincompress ducking（人声来时压低背景音）的完整参数"
+                }
+              ],
+              "urls": [
+                "https://github.com/calesthio/OpenMontage"
+              ]
+            },
+            {
+              "id": "repo-cc-video-toolkit",
+              "title": "cc-video-toolkit",
+              "tag": "decision",
+              "summary": "自建云 GPU 的低成本生成栈，MoviePy 与时长漂移的经验详实",
+              "goal": "定位：完整 AI 成片制作工作区，从脚本到配音到画面到成片。LICENSE：MIT。访谈价值弱，赛事价值弱。局限：从零造视频不做减法，要自己部署云 GPU 与对象存储，起步成本高。",
+              "refs": [
+                {
+                  "repo": "claude-code-video-toolkit",
+                  "path": "claude-code-video-toolkit/.claude/skills/moviepy/SKILL.md",
+                  "line": 88,
+                  "why": "MoviePy 文字被切边的问题与多轨限制"
+                },
+                {
+                  "repo": "claude-code-video-toolkit",
+                  "path": "claude-code-video-toolkit/CLAUDE.md",
+                  "line": 549,
+                  "why": "TTS 时长漂移的量化数据"
+                }
+              ],
+              "urls": [
+                "https://github.com/digitalsamba/claude-code-video-toolkit"
+              ]
+            },
+            {
+              "id": "repo-video-agent-skills",
+              "title": "video-agent-skills",
+              "tag": "decision",
+              "summary": "角色化 Skill 编排与检查点恢复，输出剪映或达芬奇工程",
+              "goal": "定位：11 个中文 Skill 组成的多 Agent 团队，从选题到可编辑时间线。LICENSE：MIT。访谈弱，赛事弱。局限：知识视频专用，依赖外部 API 与 DaVinci 付费版。",
+              "refs": [
+                {
+                  "repo": "video-agent-skills",
+                  "path": "video-agent-skills/video-agent-producer/SKILL.md",
+                  "line": 32,
+                  "why": "11 个 Agent 的调度协议"
+                },
+                {
+                  "repo": "video-agent-skills",
+                  "path": "video-agent-skills/video-agent-jianying-editor/SKILL.md",
+                  "line": 55,
+                  "why": "剪映草稿文件夹的产物结构"
+                }
+              ],
+              "urls": [
+                "https://github.com/chenhuajinchj/video-agent-skills"
+              ]
+            },
+            {
+              "id": "repo-llm-video-maker",
+              "title": "llm-video-maker",
+              "tag": "decision",
+              "summary": "章节级重生成与资产本地化，分 stages 可断点续跑",
+              "goal": "定位：两个 Skill，用 HyperFrames 从一句 prompt 生成短视频。LICENSE：MIT。访谈价值弱，赛事价值弱。局限：只做短生成视频，没有真实素材编辑能力。",
+              "mg": "MG 动效（Motion Graphics，图形动画）端到端参考实现：brief→facts→design→storyboard→assets→compose→render，以 chapter 为编辑单位。",
+              "refs": [
+                {
+                  "repo": "llm-video-maker",
+                  "path": "llm-video-maker/skills/make-video/SKILL.md",
+                  "line": 399,
+                  "why": "质量硬约束清单"
+                }
+              ],
+              "urls": [
+                "https://github.com/GoldLegendW80/llm-video-maker"
+              ]
+            },
+            {
+              "id": "repo-video-shotcraft",
+              "title": "video-shotcraft",
+              "tag": "decision",
+              "summary": "157 张可执行镜头配方卡与 Agent 创作边界的定义",
+              "goal": "定位：中文 Skill，做电影感产品宣传片，配 Motion Workbench。LICENSE：Apache-2.0。访谈弱，赛事中（镜头过渡与包装现成）。局限：只做产品与营销宣传片。",
+              "mg": "MG 动效（Motion Graphics，图形动画）最完整的方法论：八阶段流水线、品牌→动效参数推导表、卡点（对齐音乐节拍）回测门槛，交付后还有 Motion Workbench。",
+              "refs": [
+                {
+                  "repo": "video-shotcraft",
+                  "path": "video-shotcraft/SKILL.md",
+                  "line": 72,
+                  "why": "Agent 何时可自由发挥的边界定义"
+                }
+              ],
+              "urls": [
+                "https://github.com/Vincentwei1021/video-shotcraft"
+              ]
+            },
+            {
+              "id": "repo-framecraft",
+              "title": "framecraft",
+              "tag": "decision",
+              "summary": "HTML 分镜（storyboard）加 TTS 的轻量流水线，LEARNINGS 里的渲染实测有用",
+              "goal": "定位：产品 demo 视频 Skill，Playwright 截帧合成 MP4。无顶层 LICENSE 文件。访谈价值弱，赛事价值弱。局限：不接收视频素材，只生成合成画面，且只做 demo 讲解片。",
+              "refs": [
+                {
+                  "repo": "framecraft",
+                  "path": "framecraft/LEARNINGS.md",
+                  "line": 79,
+                  "why": "浏览器截帧的实测性能数据"
+                }
+              ],
+              "urls": [
+                "https://github.com/vaddisrinivas/framecraft"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer-render-base",
+          "title": "成片底座与知识包",
+          "tag": "decision",
+          "summary": "Agent 写视频的引擎，自己很少剪素材",
+          "goal": "MG（Motion Graphics，图形动画）后端应插件化。Timeline IR 经 compiler 产出各后端任务，换后端不应改变用户工程。",
+          "mg": "在 MG 方向，这层从底座升为主力：产线的绝大部分工作就是往 Remotion/HyperFrames 写组合与组件。",
+          "atomic": [
+            {
+              "name": "Remotion",
+              "impl": "React 代码即视频，Lambda/Cloud Run 分布式渲染",
+              "note": "适合数据驱动 MG 与批量生成，不适合承担工程语义"
+            },
+            {
+              "name": "HyperFrames",
+              "impl": "HTML/CSS/GSAP 到确定性 MP4",
+              "note": "要求 plan-lint-preview-render 循环，可 Docker 复现"
+            },
+            {
+              "name": "动效硬规则",
+              "impl": "claude-remotion-skill 十条不可协商规则",
+              "note": "禁线性插值、必须 clamp、入场同时动 2-3 个属性、渲染后取出帧目视检查"
+            },
+            {
+              "name": "官方 Skill 分发",
+              "impl": "remotion-dev-skills 十二个专项",
+              "note": "claude-code-plugin 与 codex-plugin 是同内容的两个分发壳"
+            },
+            {
+              "name": "字幕与词时间轴",
+              "impl": "remotion/packages/captions",
+              "note": "Remotion 主仓里唯一与剪辑直接相关的部分"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "三个仓库内容完全重复",
+              "detail": "claude-code-plugin 与 codex-plugin 的 skills 目录逐字等于 remotion-dev-skills，且都来自 remotion/packages。唯一实质差别是 manifest schema。",
+              "source": "codex-plugin/plugin.json:2"
+            },
+            {
+              "title": "Remotion 按公司规模收费",
+              "detail": "个人与三人以下营利组织免费，超过规模需购买公司许可证，且禁止修改代码去销售衍生产品。chatmonteur 把它列入自动化场景的付费依赖。",
+              "source": "remotion/LICENSE.md:19"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/README.md",
+              "line": 32,
+              "why": "确定性渲染与 Agent loop 的定位声明"
+            },
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 13,
+              "why": "十条不可协商的动效规则"
+            }
+          ],
+          "children": [
+            {
+              "id": "repo-remotion",
+              "title": "remotion",
+              "tag": "decision",
+              "summary": "React 写视频的行业标准底座，视频包装与数据动画的首选",
+              "goal": "定位：代码成片框架，137 个 packages 含自研 renderer。LICENSE：自定义双层，小团队免费大公司付费。访谈弱，赛事中。局限：不做素材理解与选段。",
+              "refs": [
+                {
+                  "repo": "remotion",
+                  "path": "remotion/LICENSE.md",
+                  "line": 19,
+                  "why": "免费使用的资格界定"
+                }
+              ],
+              "urls": [
+                "https://github.com/remotion-dev/remotion"
+              ]
+            },
+            {
+              "id": "repo-hyperframes",
+              "title": "hyperframes",
+              "tag": "decision",
+              "summary": "从 HTML 到确定性 MP4，确定性规则文档是全场最完整的",
+              "goal": "定位：HeyGen 的代码成片底座加 20 个 Agent Skill。LICENSE：Apache-2.0。访谈中，赛事中。局限：本质是渲染引擎，素材理解与剪辑决策要由外部提供。",
+              "mg": "MG 动效（Motion Graphics，图形动画）直接可用：155 个 registry block、220 个 component 与 20 个 Skill，且可渲染带 alpha 透明通道的叠加层。",
+              "refs": [
+                {
+                  "repo": "hyperframes",
+                  "path": "hyperframes/skills/hyperframes-core/references/determinism-rules.md",
+                  "line": 33,
+                  "why": "确定性渲染的禁用清单"
+                },
+                {
+                  "repo": "hyperframes",
+                  "path": "hyperframes/skills/embedded-captions/SKILL.md",
+                  "line": 240,
+                  "why": "字幕词级时序 80ms 对齐门槛"
+                }
+              ],
+              "urls": [
+                "https://github.com/heygen-com/hyperframes"
+              ]
+            },
+            {
+              "id": "repo-remotion-dev-skills",
+              "title": "remotion-dev-skills",
+              "tag": "decision",
+              "summary": "Remotion 官方十二个专项 Skill 的上游源仓库",
+              "goal": "定位：Remotion 官方 Agent Skills 源仓库。无顶层 LICENSE 文件。访谈价值弱，赛事价值弱。局限：与 Remotion 强绑定，无独立价值，且被两个插件仓库完整复制。",
+              "refs": [
+                {
+                  "repo": "remotion-dev-skills",
+                  "path": "remotion-dev-skills/skills/remotion-markup/video-editing.md",
+                  "line": 48,
+                  "why": "剪辑参数必须是硬编码整数帧"
+                },
+                {
+                  "repo": "remotion-dev-skills",
+                  "path": "remotion-dev-skills/README.md",
+                  "line": 65,
+                  "why": "字幕专项 Skill 的索引"
+                }
+              ],
+              "urls": [
+                "https://github.com/remotion-dev/skills"
+              ]
+            },
+            {
+              "id": "repo-claude-remotion-skill",
+              "title": "claude-remotion-skill",
+              "tag": "decision",
+              "summary": "动效强规则加逐帧验收，十七个可直接抄的 motion 组件",
+              "goal": "定位：第三方 Remotion 动效 Skill，强制 render 后取帧目视检查。LICENSE：MIT。访谈价值弱，赛事价值弱。局限：只管动效好不好看，不管素材选哪段。",
+              "mg": "MG 动效（Motion Graphics，图形动画）硬规则的来源：禁线性插值、入场 2–3 个属性同动、五层堆叠、静图必加 Ken Burns（缓慢推拉）、渲后必取帧目视检查。",
+              "refs": [
+                {
+                  "repo": "claude-remotion-skill",
+                  "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+                  "line": 93,
+                  "why": "em 间距解析导致的排版静默 bug"
+                }
+              ],
+              "urls": [
+                "https://github.com/haidrrrry/claude-remotion-skill"
+              ]
+            },
+            {
+              "id": "repo-remotion-plugins",
+              "title": "Remotion 两个插件",
+              "tag": "decision",
+              "summary": "两个官方分发壳，内容与上游逐字重复",
+              "goal": "定位：Remotion 官方 Claude 与 Codex 分发适配层。LICENSE：claude-code-plugin 无许可证文件，codex-plugin 为 MIT。访谈弱，赛事弱。局限：零原创内容，是上游的分发壳。",
+              "refs": [
+                {
+                  "repo": "claude-code-plugin",
+                  "path": "claude-code-plugin/.claude-plugin/plugin.json",
+                  "line": 4,
+                  "why": "确认归属与同步版本号"
+                },
+                {
+                  "repo": "codex-plugin",
+                  "path": "codex-plugin/plugin.json",
+                  "line": 2,
+                  "why": "与 Claude 版唯一的实质差别"
+                }
+              ],
+              "urls": [
+                "https://github.com/remotion-dev/claude-code-plugin",
+                "https://github.com/remotion-dev/codex-plugin"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer-highlight",
+          "title": "高光发现与长视频理解",
+          "tag": "decision",
+          "summary": "把长素材变成事件时间线，这一层最接近我们的核心",
+          "goal": "长访谈与赛事集锦的核心难点在这层。三个仓库分别代表三条技术路线，值得逐个深挖。",
+          "atomic": [
+            {
+              "name": "多信号召回加语义确认",
+              "impl": "ClipTalk 检测器热点先落地成具体事件",
+              "note": "无法确认具体内容就标 keep=false，禁止拿检测器名称当标题"
+            },
+            {
+              "name": "多模态文本化时间线",
+              "impl": "premiere-agent 三通道交织成 merged_timeline.md",
+              "note": "文本量 200KB 到 1.5MB，LLM 一次读完而不看像素"
+            },
+            {
+              "name": "边界自检阻断导出",
+              "impl": "premiere-agent 逐个 EDL 边界对源片核对",
+              "note": "切点落在词中间或视觉不连续就阻断 FCPXML 导出"
+            },
+            {
+              "name": "事件归组与预算",
+              "impl": "ClipTalk 分组阶段与目标时长硬约束",
+              "note": "成片不能超目标时长 15%，短于 20% 必须在 warnings 里说明"
+            },
+            {
+              "name": "分层扫描",
+              "impl": "OpenChatCut overview/candidate/verification 三段",
+              "note": "平衡长上下文的两类失败：丢失中段与丢失因果"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "赛事只有通用骨架",
+              "detail": "本轮 35 个仓库里没有完整的比赛状态系统。ClipTalk 有通用事件高光实现，其余都停留在指导层。记分牌 OCR、回放画面识别、比赛时钟都需要自研。",
+              "source": "research/claim-source-ledger.md:44"
+            },
+            {
+              "title": "语音单通道方向的天花板",
+              "detail": "video-use 与 video-edit-cli 这类纯转写驱动方案在无对白素材上完全失效。premiere-agent 补的正是视觉与音频事件这两条通道。",
+              "source": "premiere-agent/README.md:3"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 130,
+              "why": "检测器信号必须落地成具体事件"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/README.md",
+              "line": 3,
+              "why": "三通道感知栈的完整声明"
+            }
+          ],
+          "children": [
+            {
+              "id": "repo-cliptalk",
+              "title": "ClipTalk",
+              "tag": "decision",
+              "summary": "目前最接近通用长视频高光导演，且是唯一有赛事案例的",
+              "goal": "定位：对话式剪辑 Agent 加 Web 精剪时间线。LICENSE：非商业署名许可证 v1.1。访谈强，赛事强。局限：禁止商用，部署成本高，VLM 成本随时长线性增长。",
+              "refs": [
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/prompts.py",
+                  "line": 224,
+                  "why": "编排阶段的时间码与顺序约束"
+                },
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/recognition_pipeline.py",
+                  "line": 209,
+                  "why": "分档抽帧（按固定间隔取画面帧）预算的真实取舍"
+                }
+              ],
+              "urls": [
+                "https://github.com/GML-MMGroup/ClipTalk"
+              ]
+            },
+            {
+              "id": "repo-premiere-agent",
+              "title": "premiere-agent",
+              "tag": "decision",
+              "summary": "最强的多模态文本化时间线，三通道全本地且交回专业剪辑软件（NLE）",
+              "goal": "定位：100% 本地的对话式助理剪辑师，只输出 FCPXML 与 xmeml 工程文件。无 LICENSE 文件。访谈强，赛事强。局限：不给成片，需 GPU，无许可证不能直接复用代码。",
+              "refs": [
+                {
+                  "repo": "premiere-agent",
+                  "path": "premiere-agent/SKILL.md",
+                  "line": 461,
+                  "why": "多 take（同一段多次拍摄）选优逻辑，长访谈直接可用"
+                },
+                {
+                  "repo": "premiere-agent",
+                  "path": "premiere-agent/AGENT.md",
+                  "line": 32,
+                  "why": "全量读时间线的强制规则"
+                }
+              ],
+              "urls": [
+                "https://github.com/Kemerd/premiere-agent"
+              ]
+            },
+            {
+              "id": "repo-openchatcut-highlight",
+              "title": "OpenChatCut 知识包",
+              "tag": "decision",
+              "summary": "赛事与直播的 profile 矩阵、质量闸门清单与评测规范，指导层最完整",
+              "goal": "定位：livestream-to-clips 与 long-video-to-shorts 的参考文档。LICENSE：AGPL-3.0。访谈中，赛事强（仅知识层）。局限：是判断规范不是实现，比赛状态系统仍需自研。",
+              "refs": [
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+                  "line": 3,
+                  "why": "工具成功不等于任务完成"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+                  "line": 13,
+                  "why": "分层扫描平衡两类长上下文失败"
+                }
+              ],
+              "urls": [
+                "https://github.com/0xsline/OpenChatCut"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "layer-cloud-skill",
+          "title": "云端托管 Skill 包",
+          "tag": "decision",
+          "summary": "开源的只是 Skill，真正的剪辑全在别人服务器上",
+          "goal": "这两个仓库容易被误当成技术方案。它们的真实价值是用例拆分法与 Skill 编写规范。",
+          "atomic": [
+            {
+              "name": "用例拆分法",
+              "impl": "clueso 把 90 个业务场景各做成一个固定 recipe",
+              "note": "其中 webinar-to-highlight-clips、shorten-to-length 与我们的需求对口"
+            },
+            {
+              "name": "Skill 编写规范",
+              "impl": "clueso spec/SKILL_SPEC.md 加 CI 强制",
+              "note": "90 个 Skill 统一格式，这套规范本身值得抄"
+            },
+            {
+              "name": "托管状态机",
+              "impl": "BlitzReels 八步 ingest 到 export",
+              "note": "转写、选段、reframe（竖屏重构图）、字幕、QA 的阶段划分可参考"
+            },
+            {
+              "name": "版式选择",
+              "impl": "BlitzReels tutorial/interview/podcast 三种版式",
+              "note": "竖屏重构图按内容类型选版式的思路可以迁移"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "本地一行都跑不了",
+              "detail": "clueso 的 90 个 Skill 全部只依赖 Clueso MCP，BlitzReels 依赖 OAuth 加托管 MCP 且导出付费。仓库里没有任何引擎代码，不能当技术方案评估。",
+              "source": "clueso-ai-skills/README.md:3"
+            },
+            {
+              "title": "选段基于转写打分",
+              "detail": "BlitzReels 的自动选段以转写文本为基础。对赛事无效，因为赛事的关键信息是画面与现场声浪而不是台词。",
+              "source": "agent-skills/skills/blitzreels-clipping/SKILL.md:6"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "clueso-ai-skills",
+              "path": "clueso-ai-skills/spec/SKILL_SPEC.md",
+              "line": 7,
+              "why": "统一 Skill 格式的规范定义"
+            },
+            {
+              "repo": "agent-skills",
+              "path": "agent-skills/docs/video-editing-mcp-server.md",
+              "line": 1,
+              "why": "Agent-first 工作流与能力清单"
+            }
+          ],
+          "children": [
+            {
+              "id": "repo-agent-skills",
+              "title": "agent-skills",
+              "tag": "decision",
+              "summary": "托管短视频剪辑平台的 Skill 包，只借鉴阶段划分",
+              "goal": "定位：BlitzReels SaaS 的官方 Skill 加托管 MCP 入口，本地无引擎。LICENSE：MIT。访谈中（有 interview 版式），赛事弱。局限：闭源托管，需 OAuth，导出付费。",
+              "refs": [
+                {
+                  "repo": "agent-skills",
+                  "path": "agent-skills/skills/blitzreels-clipping/SKILL.md",
+                  "line": 6,
+                  "why": "八步托管状态机，全仓库唯一的实质内容"
+                }
+              ],
+              "urls": [
+                "https://github.com/blitzreels/agent-skills"
+              ]
+            },
+            {
+              "id": "repo-clueso",
+              "title": "clueso-ai-skills",
+              "tag": "decision",
+              "summary": "90 个业务场景 recipe，借鉴用例拆分与 Skill 规范",
+              "goal": "定位：Clueso SaaS 的 90 个 Skill 目录，全部依赖 Clueso MCP。LICENSE：Apache-2.0。访谈中（webinar 高光对口），赛事弱。局限：离开 Clueso MCP 完全无法运行。",
+              "refs": [
+                {
+                  "repo": "clueso-ai-skills",
+                  "path": "clueso-ai-skills/skills/webinar-to-highlight-clips/SKILL.md",
+                  "line": 39,
+                  "why": "最贴近长视频高光需求的 recipe"
+                }
+              ],
+              "urls": [
+                "https://github.com/clueso-ai/skills"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

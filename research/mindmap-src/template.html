@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>长视频集锦 Agent 思维导图</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --canvas: #fbfbfc;
+  --grid: rgba(0,0,0,.045);
+  --fg: #1c1f24;
+  --fg-2: #5b6470;
+  --fg-3: #8a939e;
+  --card: #ffffff;
+  --border: rgba(20,24,32,.10);
+  --border-2: rgba(20,24,32,.18);
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.06);
+  --shadow-lg: 0 2px 6px rgba(0,0,0,.08), 0 18px 48px rgba(0,0,0,.14);
+  --accent: #2f6fed;
+  --accent-bg: rgba(47,111,237,.10);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --tag-shared: #3a7bd5;
+  --tag-interview: #d9822b;
+  --tag-sports: #2aa876;
+  --tag-mg: #c2338f;
+  --tag-gap: #d94141;
+  --tag-atomic: #7b61c8;
+  --tag-pitfall: #c2410c;
+  --tag-decision: #5d6b7a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --canvas: #181b20;
+    --grid: rgba(255,255,255,.05);
+    --fg: #e7eaee;
+    --fg-2: #a6afbb;
+    --fg-3: #737d8a;
+    --card: #1f2329;
+    --border: rgba(255,255,255,.10);
+    --border-2: rgba(255,255,255,.18);
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+    --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 18px 48px rgba(0,0,0,.55);
+    --accent: #6f9cff;
+    --accent-bg: rgba(111,156,255,.16);
+    --tag-shared: #6f9cff;
+    --tag-interview: #f0a050;
+    --tag-sports: #4cc99a;
+    --tag-mg: #ef6fc0;
+    --tag-gap: #ff6b6b;
+    --tag-atomic: #a58cf0;
+    --tag-pitfall: #f0834a;
+    --tag-decision: #9aa7b5;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+code, .mono { font-family: var(--mono); font-size: .92em; }
+
+/* ---------- app frame ---------- */
+#app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+header.bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--card);
+  z-index: 5;
+}
+header .brand { display: flex; flex-direction: column; min-width: 240px; }
+header .brand h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+header .brand .flow { color: var(--fg-2); font-size: 12px; }
+header .flow b { color: var(--fg); font-weight: 500; }
+header .spacer { flex: 1; }
+.search {
+  display: flex; align-items: center; gap: 6px; border: 1px solid var(--border-2); border-radius: 8px;
+  background: var(--bg); padding: 0 8px; height: 32px; min-width: 300px;
+}
+.search input { border: 0; background: transparent; outline: 0; color: var(--fg); font: inherit; width: 100%; }
+.search .count { color: var(--fg-3); font-size: 12px; white-space: nowrap; }
+.search .clear { border: 0; background: transparent; color: var(--fg-3); cursor: pointer; padding: 0 2px; }
+.seg { display: inline-flex; border: 1px solid var(--border-2); border-radius: 8px; overflow: hidden; height: 32px; }
+.seg button { border: 0; background: transparent; padding: 0 10px; cursor: pointer; color: var(--fg-2); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--accent-bg); color: var(--accent); font-weight: 500; }
+.btn {
+  height: 32px; padding: 0 10px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--card);
+  cursor: pointer; color: var(--fg-2); white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.icon { width: 32px; padding: 0; font-size: 16px; line-height: 1; }
+.legend { display: flex; gap: 10px; flex-wrap: wrap; color: var(--fg-2); font-size: 12px; align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 4px; }
+.legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.stats { color: var(--fg-3); font-size: 12px; white-space: nowrap; }
+
+main { position: relative; display: grid; grid-template-columns: 1fr 0; transition: grid-template-columns .2s ease; overflow: hidden; }
+main.panel-open { grid-template-columns: 1fr 440px; }
+@media (max-width: 900px) { main.panel-open { grid-template-columns: 0 1fr; } }
+
+/* ---------- canvas ---------- */
+#canvas {
+  position: relative; overflow: hidden; background: var(--canvas);
+  background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+  background-size: 22px 22px;
+  cursor: grab; user-select: none; touch-action: none;
+}
+#canvas.dragging { cursor: grabbing; }
+#viewport { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+#links { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+#links path { fill: none; stroke-width: 1.6; opacity: .85; }
+#links path.l1 { stroke-width: 2.4; }
+#links path.dim { opacity: .18; }
+#nodes { position: absolute; left: 0; top: 0; }
+
+.node {
+  position: absolute; display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 9px; background: var(--card); border: 1px solid var(--border);
+  box-shadow: var(--shadow); white-space: nowrap; cursor: pointer; font-size: 12.5px; line-height: 1.35;
+  transition: opacity .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.node[hidden] { display: none; }
+.node:hover { border-color: var(--border-2); box-shadow: var(--shadow-lg); }
+.node.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.node.dim { opacity: .28; }
+.node.match { box-shadow: 0 0 0 2px var(--c, var(--accent)), var(--shadow); }
+.node .bar { width: 4px; align-self: stretch; border-radius: 3px; background: var(--c); margin: -1px 0 -1px -4px; }
+.node .title { font-weight: 500; }
+.node .num { color: var(--c); font-weight: 600; }
+.node .chip {
+  font-size: 10px; padding: 0 5px; border-radius: 5px; line-height: 15px; font-weight: 500;
+  background: color-mix(in srgb, var(--tag) 14%, transparent); color: var(--tag);
+}
+.node .meta { color: var(--fg-3); font-size: 10.5px; display: inline-flex; gap: 6px; }
+.node .meta b { font-weight: 500; color: var(--fg-2); }
+.node .meta.compact { gap: 4px; font-size: 10px; letter-spacing: -.01em; }
+.node.depth-1 { font-size: 13.5px; padding: 7px 12px; border-radius: 11px; border-color: color-mix(in srgb, var(--c) 45%, var(--border)); }
+.node.depth-1 .title { font-weight: 600; }
+.node.depth-3 { font-size: 12px; padding: 4px 9px; background: color-mix(in srgb, var(--card) 92%, var(--c)); }
+.node.root {
+  flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 18px; border-radius: 14px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, var(--card)), var(--card));
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); box-shadow: var(--shadow-lg);
+}
+.node.root .title { font-size: 16px; font-weight: 700; }
+.node.root .sub { font-size: 12px; color: var(--fg-2); }
+.node.root .sub b { color: var(--fg); font-weight: 500; }
+.node.root .sub2 { font-size: 11px; color: var(--fg-3); }
+.node .toggle {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--c); background: var(--card);
+  color: var(--c); font-size: 10px; font-weight: 600; line-height: 1; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0;
+}
+.node .toggle:hover { background: var(--c); color: #fff; }
+.node.side-right .toggle { right: -11px; }
+.node.side-left .toggle { left: -11px; }
+.node .ext { color: var(--fg-3); text-decoration: none; font-size: 11px; padding: 0 2px; border-radius: 4px; }
+.node .ext:hover { color: var(--accent); background: var(--accent-bg); }
+#panel .links { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 10px; }
+#panel .links a { font-family: var(--mono); font-size: 11.5px; color: var(--accent); text-decoration: none; border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; background: var(--bg); overflow-wrap: anywhere; }
+#panel .links a:hover { border-color: var(--accent); text-decoration: underline; }
+.node .dom { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.node .dom.i { background: var(--tag-interview); }
+.node .dom.s { background: var(--tag-sports); }
+.node .dom.m { background: var(--tag-mg); }
+
+/* ---------- detail panel ---------- */
+#panel {
+  border-left: 1px solid var(--border); background: var(--card); overflow-y: auto; overflow-x: hidden;
+  padding: 16px 18px 40px; font-size: 13px; display: none;
+}
+main.panel-open #panel { display: block; }
+#panel .crumbs { color: var(--fg-3); font-size: 11.5px; display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+#panel .crumbs a { color: var(--fg-2); cursor: pointer; }
+#panel .crumbs a:hover { color: var(--accent); text-decoration: underline; }
+#panel h2 { margin: 0 0 6px; font-size: 17px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#panel .close { position: sticky; top: 0; float: right; margin: -6px -8px 0 0; border: 0; background: transparent; font-size: 18px; color: var(--fg-3); cursor: pointer; }
+#panel .close:hover { color: var(--fg); }
+.chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px; font-weight: 500; background: color-mix(in srgb, var(--tag) 14%, transparent); color: var(--tag); }
+.chip.i { --tag: var(--tag-interview); }
+.chip.s { --tag: var(--tag-sports); }
+.chip.m { --tag: var(--tag-mg); }
+#panel .summary { font-size: 14px; color: var(--fg); margin: 0 0 10px; }
+#panel section { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+#panel section h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-3); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+#panel section h3 .n { background: var(--bg); border-radius: 5px; padding: 0 5px; font-weight: 500; }
+#panel p { margin: 0 0 6px; }
+#panel ul { margin: 0; padding-left: 16px; }
+#panel li { margin: 3px 0; }
+.io { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.io h4, .dom-cards h4 { margin: 0 0 3px; font-size: 11.5px; color: var(--fg-2); font-weight: 600; }
+.io ul { font-size: 12.5px; }
+.dom-cards { display: grid; gap: 8px; }
+.dom-card { border-radius: 8px; padding: 8px 10px; border: 1px solid var(--border); background: var(--bg); }
+.dom-card.i { border-left: 3px solid var(--tag-interview); }
+.dom-card.s { border-left: 3px solid var(--tag-sports); }
+.dom-card.m { border-left: 3px solid var(--tag-mg); }
+.dom-card.focus { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
+.item { padding: 7px 0; border-top: 1px dashed var(--border); }
+.item:first-of-type { border-top: 0; }
+.item .t { font-weight: 600; }
+.item .impl { color: var(--accent); font-family: var(--mono); font-size: 11.5px; margin-left: 6px; }
+.item .d { color: var(--fg-2); margin-top: 2px; }
+.item .src { margin-top: 3px; }
+.path {
+  display: inline-block; font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; cursor: copy; max-width: 100%;
+  overflow-wrap: anywhere; white-space: normal;
+}
+.path:hover { border-color: var(--accent); color: var(--accent); }
+.path .ln { color: var(--fg-3); }
+.kids { display: flex; flex-wrap: wrap; gap: 6px; }
+.kids button { border: 1px solid var(--border); background: var(--bg); border-radius: 7px; padding: 3px 9px; cursor: pointer; font-size: 12px; }
+.kids button:hover { border-color: var(--accent); color: var(--accent); }
+.hint { color: var(--fg-3); font-size: 11.5px; margin-top: 16px; }
+#toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px); opacity: 0;
+  background: var(--fg); color: var(--bg); padding: 7px 12px; border-radius: 8px; font-size: 12px; pointer-events: none;
+  transition: all .18s ease; z-index: 20;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#help {
+  position: absolute; left: 12px; bottom: 12px; color: var(--fg-3); font-size: 11.5px; background: color-mix(in srgb, var(--card) 85%, transparent);
+  padding: 6px 9px; border-radius: 8px; border: 1px solid var(--border); pointer-events: none;
+}
+#zoomctl { position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <div class="brand">
+      <h1>长视频集锦 Agent · 思维导图</h1>
+      <div class="flow"><b>原视频理解</b> → <b>LLM 按意图写脚本</b> → <b>Agent 选片 + 本地搜 BGM</b> → <b>合成视频</b>　·　右侧是集锦主流程，左侧是产品方向、工程交付和跨流程公共能力；第三个方向 <b>MG 动效制作（图形动画）</b> 单独一支</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="search">
+      <span aria-hidden="true">⌕</span>
+      <input id="q" type="search" placeholder="搜索：回放、Beat This、fade、AGPL、比分 …（Enter 跳到下一个）" aria-label="搜索节点">
+      <span class="count" id="qcount"></span>
+      <button class="clear" id="qclear" title="清除" aria-label="清除搜索">✕</button>
+    </div>
+    <div class="seg" role="group" aria-label="视角">
+      <button data-view="all" aria-pressed="true">全部</button>
+      <button data-view="interview" aria-pressed="false">访谈视角</button>
+      <button data-view="sports" aria-pressed="false">赛事视角</button>
+      <button data-view="mg" aria-pressed="false">MG 视角</button>
+    </div>
+    <div class="seg" role="group" aria-label="展开层级">
+      <button data-depth="1" title="只显示一级分支">L1</button>
+      <button data-depth="2" title="展开到二级">L2</button>
+      <button data-depth="3" title="展开到三级">L3</button>
+      <button data-depth="99" title="全部展开">全部</button>
+    </div>
+    <button class="btn" id="fit" title="适应屏幕 (F)">适应屏幕</button>
+    <div class="legend" id="legend"></div>
+    <div class="stats" id="stats"></div>
+  </header>
+  <main id="main">
+    <div id="canvas">
+      <div id="viewport">
+        <svg id="links"></svg>
+        <div id="nodes"></div>
+      </div>
+      <div id="help">拖动平移 · 滚轮平移 · ⌘/Ctrl+滚轮或双指缩放 · 点节点看详情 · 点圆点展开/折叠 · Esc 关闭</div>
+      <div id="zoomctl">
+        <button class="btn icon" id="zin" title="放大">+</button>
+        <button class="btn icon" id="zout" title="缩小">−</button>
+      </div>
+    </div>
+    <aside id="panel" aria-live="polite"></aside>
+  </main>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+const DATA = __DATA_JSON__;
+</script>
+<script>
+(() => {
+  const TAGS = {
+    shared:    { label: '共享内核', color: 'var(--tag-shared)' },
+    interview: { label: '访谈',     color: 'var(--tag-interview)' },
+    sports:    { label: '赛事',     color: 'var(--tag-sports)' },
+    mg:        { label: 'MG 动效',  color: 'var(--tag-mg)' },
+    gap:       { label: '能力空档', color: 'var(--tag-gap)' },
+    atomic:    { label: '原子能力', color: 'var(--tag-atomic)' },
+    pitfall:   { label: '踩坑',     color: 'var(--tag-pitfall)' },
+    decision:  { label: '决策',     color: 'var(--tag-decision)' },
+  };
+  const BASE = DATA.meta.base;
+
+  // ---------- build index ----------
+  const nodes = new Map();      // id -> node
+  const root = { id: '__root', title: DATA.root.title, depth: 0, children: [], isRoot: true };
+  nodes.set(root.id, root);
+  function index(n, parent, depth, branch) {
+    n.parent = parent; n.depth = depth; n.branch = branch || n; n.children = n.children || [];
+    n.color = n.color || (branch ? branch.color : '#888');
+    n.side = n.side || (branch ? branch.side : 'right');
+    if (nodes.has(n.id)) console.warn('duplicate id', n.id);
+    nodes.set(n.id, n);
+    n.children.forEach(c => index(c, n, depth + 1, n.branch));
+  }
+  DATA.branches.forEach(b => { root.children.push(b); index(b, root, 1, null); });
+
+  const all = [...nodes.values()].filter(n => !n.isRoot);
+  const stats = {
+    nodes: all.length,
+    atomic: all.reduce((s, n) => s + (n.atomic?.length || 0), 0),
+    pitfalls: all.reduce((s, n) => s + (n.pitfalls?.length || 0), 0),
+    refs: all.reduce((s, n) => s + (n.refs?.length || 0), 0),
+  };
+  document.getElementById('stats').textContent =
+    `${stats.nodes} 节点 · ${stats.atomic} 原子能力 · ${stats.pitfalls} 条踩坑 · ${stats.refs} 处参考`;
+  document.getElementById('legend').innerHTML = Object.entries(TAGS)
+    .map(([k, t]) => `<span><i style="background:${t.color}"></i>${t.label}</span>`).join('');
+
+  // searchable text cache
+  for (const n of all) {
+    const parts = [n.title, n.summary, n.goal, n.interview, n.sports, n.mg, ...(n.urls || []), ...(n.points || []), ...(n.inputs || []), ...(n.outputs || [])];
+    (n.atomic || []).forEach(a => parts.push(a.name, a.impl, a.note));
+    (n.pitfalls || []).forEach(p => parts.push(p.title, p.detail, p.source));
+    (n.refs || []).forEach(r => parts.push(r.repo, r.path, r.why));
+    n._text = parts.filter(Boolean).join(' \n ').toLowerCase();
+  }
+
+  // ---------- state ----------
+  const state = {
+    expanded: new Set([root.id, ...root.children.map(c => c.id)]),
+    selected: null,
+    view: 'all',
+    query: '',
+    matches: new Set(),
+    matchList: [],
+    matchCursor: -1,
+    savedExpanded: null,
+    k: 1, tx: 0, ty: 0,
+  };
+
+  const $canvas = document.getElementById('canvas');
+  const $vp = document.getElementById('viewport');
+  const $links = document.getElementById('links');
+  const $nodes = document.getElementById('nodes');
+  const $panel = document.getElementById('panel');
+  const $main = document.getElementById('main');
+  const els = new Map();
+
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function isVisible(n) {
+    let p = n.parent;
+    while (p) { if (!state.expanded.has(p.id)) return false; p = p.parent; }
+    return true;
+  }
+  function domainOf(n) {
+    // returns which domains this node speaks to
+    const d = new Set();
+    if (n.tag === 'interview' || n.interview) d.add('interview');
+    if (n.tag === 'sports' || n.sports) d.add('sports');
+    if (n.tag === 'mg' || n.mg) d.add('mg');
+    return d;
+  }
+  function isDimmedByView(n) {
+    if (state.view === 'all') return false;
+    if (n.tag === 'shared' || n.tag === 'atomic' || n.tag === 'pitfall' || n.tag === 'decision' || n.tag === 'gap') {
+      // cross-cutting nodes: dim only if the other domain is explicitly the only domain
+      const d = domainOf(n);
+      if (d.size === 0) return false;
+      return !d.has(state.view);
+    }
+    return n.tag !== state.view && !domainOf(n).has(state.view);
+  }
+
+  // ---------- node DOM ----------
+  function nodeEl(n) {
+    if (els.has(n.id)) return els.get(n.id);
+    const el = document.createElement('div');
+    el.className = 'node';
+    el.dataset.id = n.id;
+    if (n.isRoot) {
+      el.classList.add('root');
+      el.innerHTML = `<span class="title">${esc(n.title)}</span><span class="sub">${DATA.root.subtitle}</span><span class="sub2">${esc(DATA.root.note)}</span>`;
+    } else {
+      el.classList.add(`depth-${n.depth}`, `side-${n.side}`);
+      el.style.setProperty('--c', n.color);
+      el.style.setProperty('--tag', TAGS[n.tag]?.color || 'var(--fg-3)');
+      const showChip = n.tag && (n.depth === 1 || n.tag !== (n.parent?.tag || n.branch.tag));
+      const chip = showChip ? `<span class="chip">${TAGS[n.tag]?.label || esc(n.tag)}</span>` : '';
+      const doms = (n.interview ? '<i class="dom i" title="有访谈侧说明"></i>' : '') + (n.sports ? '<i class="dom s" title="有赛事侧说明"></i>' : '') + (n.mg ? '<i class="dom m" title="有 MG 侧说明"></i>' : '');
+      const meta = n.depth <= 2 ? metaHtml(n) : '';
+      const ext = n.urls?.length ? `<a class="ext" href="${esc(n.urls[0])}" target="_blank" rel="noopener" title="${esc(n.urls[0])}">↗</a>` : '';
+      el.innerHTML = `<span class="bar"></span>${n.num ? `<span class="num">${esc(n.num)}</span>` : ''}<span class="title">${esc(n.title)}</span>${chip}${doms}${meta}${ext}` +
+        (n.children.length ? `<button class="toggle" aria-label="展开/折叠"></button>` : '');
+    }
+    el.addEventListener('click', e => {
+      if (e.target.closest('.ext')) return; // let the link open
+      if (e.target.closest('.toggle')) { toggle(n); return; }
+      select(n.id, { center: false });
+    });
+    el.addEventListener('dblclick', e => { e.preventDefault(); if (n.children.length) toggle(n); });
+    $nodes.appendChild(el);
+    els.set(n.id, el);
+    return el;
+  }
+  function countDeep(n, key) { return (n[key]?.length || 0) + n.children.reduce((s, c) => s + countDeep(c, key), 0); }
+  function metaHtml(n) {
+    const a = countDeep(n, 'atomic'), p = countDeep(n, 'pitfalls');
+    if (!a && !p) return '';
+    if (n.depth >= 2) return `<span class="meta compact">${a ? `<span title="${a} 项原子能力（含子节点）">⚙${a}</span>` : ''}${p ? `<span title="${p} 条踩坑（含子节点）">⚠${p}</span>` : ''}</span>`;
+    return `<span class="meta">${a ? `<span title="原子能力（含子节点）"><b>${a}</b> 能力</span>` : ''}${p ? `<span title="踩坑经验（含子节点）"><b>${p}</b> 坑</span>` : ''}</span>`;
+  }
+
+  // ---------- layout ----------
+  const H_GAP_L1 = 64, H_GAP = 40, V_GAP = 7, V_GAP_L1 = 20;
+  function render() {
+    // 1. ensure DOM + visibility
+    const visible = [];
+    for (const n of nodes.values()) {
+      const el = nodeEl(n);
+      const vis = n.isRoot || isVisible(n);
+      el.hidden = !vis;
+      if (!vis) continue;
+      visible.push(n);
+      el.classList.toggle('selected', state.selected === n.id);
+      const dimSearch = state.query && !state.matches.has(n.id) && !n.isRoot;
+      const dimView = !n.isRoot && isDimmedByView(n);
+      el.classList.toggle('dim', dimSearch || dimView);
+      el.classList.toggle('match', !!state.query && state.matches.has(n.id));
+      const tg = el.querySelector('.toggle');
+      if (tg) {
+        const open = state.expanded.has(n.id);
+        tg.textContent = open ? '−' : String(n.children.length);
+        tg.title = open ? '折叠' : `展开 ${n.children.length} 个子节点`;
+      }
+    }
+    // 2. measure
+    for (const n of visible) { const r = els.get(n.id); n.w = r.offsetWidth; n.h = r.offsetHeight; }
+    // 3. layout
+    const subH = new Map();
+    function sh(n) {
+      if (subH.has(n.id)) return subH.get(n.id);
+      let h = n.h;
+      if (state.expanded.has(n.id) && n.children.length) {
+        const gap = n.isRoot ? V_GAP_L1 : V_GAP;
+        const kidsH = n.children.reduce((s, c) => s + sh(c), 0) + gap * (n.children.length - 1);
+        h = Math.max(h, kidsH);
+      }
+      subH.set(n.id, h); return h;
+    }
+    function place(n, x, cy, dir) {
+      n.x = dir > 0 ? x : x - n.w; n.y = cy - n.h / 2; n.cy = cy;
+      if (!state.expanded.has(n.id) || !n.children.length) return;
+      const gap = V_GAP;
+      let y = cy - sh(n) / 2;
+      const hgap = n.depth === 1 ? H_GAP : H_GAP;
+      for (const c of n.children) {
+        const h = sh(c);
+        place(c, dir > 0 ? n.x + n.w + hgap : n.x - hgap, y + h / 2, dir);
+        y += h + gap;
+      }
+    }
+    root.x = -root.w / 2; root.y = -root.h / 2; root.cy = 0;
+    const right = root.children.filter(b => b.side === 'right');
+    const left = root.children.filter(b => b.side === 'left');
+    for (const [list, dir] of [[right, 1], [left, -1]]) {
+      const total = list.reduce((s, b) => s + sh(b), 0) + V_GAP_L1 * (list.length - 1);
+      let y = -total / 2;
+      for (const b of list) {
+        const h = sh(b);
+        place(b, dir > 0 ? root.x + root.w + H_GAP_L1 : root.x - H_GAP_L1, y + h / 2, dir);
+        y += h + V_GAP_L1;
+      }
+    }
+    // 4. draw
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of visible) {
+      const el = els.get(n.id);
+      el.style.transform = `translate(${n.x}px, ${n.y}px)`;
+      minX = Math.min(minX, n.x); minY = Math.min(minY, n.y); maxX = Math.max(maxX, n.x + n.w); maxY = Math.max(maxY, n.y + n.h);
+    }
+    state.bounds = { minX, minY, maxX, maxY };
+    const paths = [];
+    for (const n of visible) {
+      if (n.isRoot || !n.parent) continue;
+      const p = n.parent;
+      const dir = n.side === 'right' ? 1 : -1;
+      const x1 = dir > 0 ? p.x + p.w : p.x, y1 = p.cy;
+      const x2 = dir > 0 ? n.x : n.x + n.w, y2 = n.cy;
+      const mx = (x1 + x2) / 2;
+      const dim = (state.query && !state.matches.has(n.id)) || isDimmedByView(n);
+      paths.push(`<path class="${n.depth === 1 ? 'l1' : ''} ${dim ? 'dim' : ''}" stroke="${n.color}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`);
+    }
+    const pad = 200;
+    $links.setAttribute('width', maxX - minX + pad * 2);
+    $links.setAttribute('height', maxY - minY + pad * 2);
+    $links.style.left = `${minX - pad}px`; $links.style.top = `${minY - pad}px`;
+    $links.setAttribute('viewBox', `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`);
+    $links.innerHTML = paths.join('');
+    applyTransform();
+  }
+
+  // ---------- zoom / pan ----------
+  function applyTransform() { $vp.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.k})`; }
+  function fit(opts = {}) {
+    const b = state.bounds; if (!b) return;
+    const W = $canvas.clientWidth, H = $canvas.clientHeight;
+    const bw = b.maxX - b.minX + 80, bh = b.maxY - b.minY + 80;
+    let k = Math.min(W / bw, H / bh);
+    const minK = opts.minK ?? 0.35;
+    const clamped = k < minK;
+    k = Math.max(minK, Math.min(opts.maxK ?? 1.25, k));
+    state.k = k;
+    // If the map does not fit at the minimum readable zoom, center on the root instead of the bbox center.
+    const cx = clamped ? 0 : (b.minX + b.maxX) / 2, cy = clamped ? 0 : (b.minY + b.maxY) / 2;
+    state.tx = W / 2 - cx * k; state.ty = H / 2 - cy * k;
+    applyTransform();
+  }
+  function centerOn(n) {
+    const W = $canvas.clientWidth, H = $canvas.clientHeight;
+    const cx = n.x + n.w / 2, cy = n.cy;
+    state.tx = W / 2 - cx * state.k; state.ty = H / 2 - cy * state.k; applyTransform();
+  }
+  function zoomAt(factor, px, py) {
+    const k2 = Math.max(0.2, Math.min(3, state.k * factor));
+    state.tx = px - (px - state.tx) * (k2 / state.k);
+    state.ty = py - (py - state.ty) * (k2 / state.k);
+    state.k = k2; applyTransform();
+  }
+  $canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = $canvas.getBoundingClientRect();
+    if (e.ctrlKey || e.metaKey) {
+      zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
+    } else {
+      state.tx -= e.deltaX; state.ty -= e.deltaY; applyTransform();
+    }
+  }, { passive: false });
+  let drag = null;
+  $canvas.addEventListener('pointerdown', e => {
+    if (e.target.closest('.node')) return;
+    drag = { x: e.clientX, y: e.clientY, tx: state.tx, ty: state.ty };
+    $canvas.classList.add('dragging'); $canvas.setPointerCapture(e.pointerId);
+  });
+  $canvas.addEventListener('pointermove', e => {
+    if (!drag) return;
+    state.tx = drag.tx + (e.clientX - drag.x); state.ty = drag.ty + (e.clientY - drag.y); applyTransform();
+  });
+  const endDrag = () => { drag = null; $canvas.classList.remove('dragging'); };
+  $canvas.addEventListener('pointerup', endDrag); $canvas.addEventListener('pointercancel', endDrag);
+  document.getElementById('zin').onclick = () => zoomAt(1.25, $canvas.clientWidth / 2, $canvas.clientHeight / 2);
+  document.getElementById('zout').onclick = () => zoomAt(0.8, $canvas.clientWidth / 2, $canvas.clientHeight / 2);
+  document.getElementById('fit').onclick = () => fit({ minK: 0.2 });
+
+  // ---------- expand / collapse ----------
+  function toggle(n) {
+    if (state.expanded.has(n.id)) collapseDeep(n); else state.expanded.add(n.id);
+    render();
+  }
+  function collapseDeep(n) { state.expanded.delete(n.id); n.children.forEach(collapseDeep); }
+  function expandToDepth(d) {
+    state.expanded = new Set([root.id]);
+    for (const n of all) if (n.depth < d) state.expanded.add(n.id);
+    render(); fit();
+  }
+  function expandPath(n) { let p = n.parent; while (p) { state.expanded.add(p.id); p = p.parent; } }
+  document.querySelectorAll('[data-depth]').forEach(b => b.onclick = () => expandToDepth(+b.dataset.depth));
+
+  // ---------- selection + panel ----------
+  function select(id, opts = {}) {
+    const n = nodes.get(id); if (!n) return;
+    state.selected = id;
+    expandPath(n);
+    if (n.children.length && opts.expand) state.expanded.add(n.id);
+    render();
+    if (opts.center) centerOn(n);
+    renderPanel(n);
+    $main.classList.add('panel-open');
+    history.replaceState(null, '', '#' + encodeURIComponent(id));
+    requestAnimationFrame(() => { render(); if (opts.center) centerOn(n); });
+    if (opts.center) setTimeout(() => centerOn(n), 240); // after panel grid transition
+  }
+  function closePanel() { state.selected = null; $main.classList.remove('panel-open'); history.replaceState(null, '', location.pathname); render(); }
+
+  function pathHtml(path, line) {
+    const full = BASE + path + (line ? `:${line}` : '');
+    return `<span class="path" data-copy="${esc(full)}" title="点击复制绝对路径">${esc(path)}${line ? `<span class="ln">:${line}</span>` : ''}</span>`;
+  }
+  function renderPanel(n) {
+    const crumbs = [];
+    for (let p = n.parent; p && !p.isRoot; p = p.parent) crumbs.unshift(p);
+    const tag = TAGS[n.tag];
+    const view = state.view;
+    const sec = (title, count, body) => body ? `<section><h3>${title}${count ? `<span class="n">${count}</span>` : ''}</h3>${body}</section>` : '';
+    const list = arr => arr?.length ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+    let html = `<button class="close" id="pclose" aria-label="关闭">✕</button>`;
+    html += `<div class="crumbs"><a data-go="__root">${esc(DATA.root.title)}</a>${crumbs.map(c => ` › <a data-go="${c.id}">${esc(c.title)}</a>`).join('')}</div>`;
+    html += `<h2>${n.num ? `<span style="color:${n.color}">${esc(n.num)}</span>` : ''}${esc(n.title)}${tag ? `<span class="chip" style="--tag:${tag.color}">${tag.label}</span>` : ''}</h2>`;
+    if (n.urls?.length) html += `<div class="links">${n.urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\//, ''))} ↗</a>`).join('')}</div>`;
+    if (n.summary) html += `<p class="summary">${esc(n.summary)}</p>`;
+    if (n.goal) html += `<p>${esc(n.goal)}</p>`;
+    if (n.inputs?.length || n.outputs?.length) {
+      html += sec('输入 / 输出产物', 0, `<div class="io"><div><h4>输入</h4>${list(n.inputs) || '<p class="hint">—</p>'}</div><div><h4>输出</h4>${list(n.outputs) || '<p class="hint">—</p>'}</div></div>`);
+    }
+    if (n.interview || n.sports || n.mg) {
+      html += sec('访谈 vs 赛事 vs MG', 0, `<div class="dom-cards">` +
+        (n.interview ? `<div class="dom-card i ${view === 'interview' ? 'focus' : ''}"><h4>长访谈</h4>${esc(n.interview)}</div>` : '') +
+        (n.sports ? `<div class="dom-card s ${view === 'sports' ? 'focus' : ''}"><h4>体育赛事</h4>${esc(n.sports)}</div>` : '') +
+        (n.mg ? `<div class="dom-card m ${view === 'mg' ? 'focus' : ''}"><h4>MG 动效制作</h4>${esc(n.mg)}</div>` : '') + `</div>`);
+    }
+    if (n.points?.length) html += sec('要点', n.points.length, list(n.points));
+    if (n.atomic?.length) {
+      html += sec('原子能力', n.atomic.length, n.atomic.map(a =>
+        `<div class="item"><span class="t">${esc(a.name)}</span>${a.impl ? `<span class="impl">${esc(a.impl)}</span>` : ''}${a.note ? `<div class="d">${esc(a.note)}</div>` : ''}</div>`).join(''));
+    }
+    if (n.pitfalls?.length) {
+      html += sec('踩坑经验', n.pitfalls.length, n.pitfalls.map(p =>
+        `<div class="item"><span class="t">⚠ ${esc(p.title)}</span><div class="d">${esc(p.detail)}</div>${p.source ? `<div class="src">${srcHtml(p.source)}</div>` : ''}</div>`).join(''));
+    }
+    if (n.refs?.length) {
+      html += sec('参考实现', n.refs.length, n.refs.map(r =>
+        `<div class="item"><span class="t">${esc(r.repo)}</span><div class="src">${pathHtml(r.path, r.line)}</div>${r.why ? `<div class="d">${esc(r.why)}</div>` : ''}</div>`).join(''));
+    }
+    if (n.children.length) {
+      html += sec('子节点', n.children.length, `<div class="kids">${n.children.map(c => `<button data-go="${c.id}" style="border-left:3px solid ${c.color}">${esc(c.title)}</button>`).join('')}</div>`);
+    }
+    html += `<div class="hint">路径相对于 <code>${esc(BASE)}</code>，点击路径可复制绝对路径。</div>`;
+    $panel.innerHTML = html;
+    $panel.scrollTop = 0;
+    $panel.querieAll = null;
+    document.getElementById('pclose').onclick = closePanel;
+    $panel.querySelectorAll('[data-go]').forEach(a => a.onclick = () => {
+      const id = a.dataset.go;
+      if (id === '__root') { closePanel(); fit(); return; }
+      select(id, { center: true, expand: true });
+    });
+    $panel.querySelectorAll('.path').forEach(p => p.onclick = () => copy(p.dataset.copy));
+  }
+  function srcHtml(src) {
+    // "repo/path/file.md:123" or free text
+    const m = /^([A-Za-z0-9_.\-\/]+?)(?::(\d+))?$/.exec(src.trim());
+    if (m && m[1].includes('/')) return pathHtml(m[1], m[2] ? +m[2] : null);
+    return `<span class="path" data-copy="${esc(src)}">${esc(src)}</span>`;
+  }
+  function copy(text) {
+    navigator.clipboard?.writeText(text).then(() => toast('已复制：' + text), () => toast(text));
+  }
+  let toastT;
+  function toast(msg) {
+    const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1600);
+  }
+
+  // ---------- view ----------
+  document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
+    state.view = b.dataset.view;
+    document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    render();
+    if (state.selected) renderPanel(nodes.get(state.selected));
+  });
+
+  // ---------- search ----------
+  const $q = document.getElementById('q'), $qc = document.getElementById('qcount');
+  function runSearch() {
+    const q = $q.value.trim().toLowerCase();
+    if (q && !state.query) state.savedExpanded = new Set(state.expanded);
+    state.query = q;
+    state.matches = new Set(); state.matchList = []; state.matchCursor = -1;
+    if (!q) {
+      if (state.savedExpanded) { state.expanded = state.savedExpanded; state.savedExpanded = null; }
+      $qc.textContent = ''; render(); return;
+    }
+    const terms = q.split(/\s+/).filter(Boolean);
+    for (const n of all) {
+      if (terms.every(t => n._text.includes(t))) { state.matches.add(n.id); state.matchList.push(n); expandPath(n); }
+    }
+    // also mark ancestors as (weak) matches so the path stays readable
+    for (const n of [...state.matchList]) { let p = n.parent; while (p && !p.isRoot) { state.matches.add(p.id); p = p.parent; } }
+    $qc.textContent = `${state.matchList.length} 个匹配`;
+    render();
+    if (state.matchList.length) fit({ minK: 0.3 });
+  }
+  $q.addEventListener('input', runSearch);
+  $q.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && state.matchList.length) {
+      state.matchCursor = (state.matchCursor + 1) % state.matchList.length;
+      const n = state.matchList[state.matchCursor];
+      $qc.textContent = `${state.matchCursor + 1} / ${state.matchList.length}`;
+      select(n.id, { center: true });
+    }
+    if (e.key === 'Escape') { $q.value = ''; runSearch(); $q.blur(); }
+  });
+  document.getElementById('qclear').onclick = () => { $q.value = ''; runSearch(); };
+
+  // ---------- keyboard ----------
+  document.addEventListener('keydown', e => {
+    if (e.target.matches('input, textarea')) return;
+    if (e.key === 'Escape') { if ($main.classList.contains('panel-open')) closePanel(); }
+    if (e.key === 'f' || e.key === 'F') fit({ minK: 0.2 });
+    if (e.key === '+' || e.key === '=') zoomAt(1.2, $canvas.clientWidth / 2, $canvas.clientHeight / 2);
+    if (e.key === '-' || e.key === '_') zoomAt(1 / 1.2, $canvas.clientWidth / 2, $canvas.clientHeight / 2);
+    if (e.key === '/') { e.preventDefault(); $q.focus(); }
+  });
+  window.addEventListener('resize', () => { render(); });
+  $main.addEventListener('transitionend', e => {
+    if (e.propertyName !== 'grid-template-columns') return;
+    render(); if (state.selected) centerOn(nodes.get(state.selected));
+  });
+
+  // ---------- boot ----------
+  render();
+  fit({ minK: 0.62 });
+  const boot = () => {
+    const v = new URLSearchParams(location.search).get('view');
+    if (v && ['all', 'interview', 'sports', 'mg'].includes(v)) {
+      state.view = v;
+      document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.view === v)));
+    }
+    const h = decodeURIComponent(location.hash.slice(1));
+    if (h && nodes.has(h)) { select(h, { center: true, expand: true }); }
+    else fit({ minK: 0.62 });
+  };
+  boot();
+  // Fonts may load after first layout; re-render once they are ready.
+  document.fonts?.ready.then(() => { render(); if (!state.selected) fit({ minK: 0.62 }); else centerOn(nodes.get(state.selected)); });
+})();
+</script>
+</body>
+</html>

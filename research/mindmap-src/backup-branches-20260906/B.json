@@ -1,0 +1,2045 @@
+{
+  "branches": [
+    {
+      "id": "brief-script",
+      "title": "意图到脚本",
+      "tag": "shared",
+      "summary": "把一句话需求变成可执行的 EditBrief 和分镜脚本",
+      "goal": "用户只说“剪个精彩集锦”。必须先把受众、平台、时长、画幅、剧透策略固化成硬约束，再写出以素材真实事件为单位的脚本结构。否则下游无法验收，也无法解释为什么选这一段。",
+      "inputs": [
+        "用户自然语言指令与追加修改意见",
+        "视频理解层：word-level transcript、shot 边界、说话人、OCR、音频事件"
+      ],
+      "outputs": [
+        "EditBrief JSON：hardConstraints + softGoals + style + techniquePolicy",
+        "脚本：HighlightUnit / slot 列表（purpose、sourceFact、duration 目标、requiredContext）",
+        "时长预算与字数预算表",
+        "脚本审批点记录（approved / sent back）"
+      ],
+      "interview": "脚本单元是 question→answer→evidence→conclusion。答案依赖提问时必须一起保留。",
+      "sports": "脚本单元是 buildup→decisive play→result→replay/reaction。必须显式写 spoiler policy。",
+      "mg": "脚本单元是场景不是素材段。30s 结构固定 HOOK→CONTEXT→BODY 3–4 拍→PAYOFF→CTA，每场只讲一个主动效。",
+      "atomic": [
+        {
+          "name": "意图解析 LLM",
+          "impl": "ClipTalk user_brief_prompt（BRIEF_PROMPT_VERSION=brief-v1）",
+          "note": "只整理用户明说的要求，未提供字段返回空串或 auto，禁止虚构视频内容"
+        },
+        {
+          "name": "约束编译器",
+          "impl": "ClipTalk compile_editing_intent",
+          "note": "把 brief 编译成 hardConstraints/softGoals，供选片和质量门共同读取"
+        },
+        {
+          "name": "领域 Planner",
+          "impl": "OpenChatCut profile-matrix 的 per-profile event arc",
+          "note": "按 section 分类而不是整片一个标签，输出 arc + 强信号 + 拒绝条件"
+        },
+        {
+          "name": "预算计算器",
+          "impl": "OpenStoryline _estimate_script_budget",
+          "note": "min_chars=时长×3、max_chars=时长×5，下限 8 字，把秒数变成字数"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "把 ask/auto 擅自定死",
+          "detail": "模型爱替用户拿主意。ClipTalk 在 brief prompt 里硬性规定：字幕策略、剪辑方式、成片结构为 ask/auto 时必须原样保留，不得自行决定，避免假装用户已授权。",
+          "source": "ClipTalk/app/prompts.py:344"
+        },
+        {
+          "title": "脚本变成凭空旁白",
+          "detail": "集锦的脚本是素材真实事件的编辑结构，不是解说词。ClipTalk 通用系统提示要求所有判断来自可见画面和明确提供的逐字稿，不得虚构对白、身份、因果或画外事件。",
+          "source": "ClipTalk/app/prompts.py:14"
+        },
+        {
+          "title": "事件数量优先于完整表达",
+          "detail": "为凑“3 个事件”截断对白是最常见劣化。ClipTalk 规定：完整保留 3 个事件会超过“目标+max(5秒,15%)”时必须减到 2 或 1，不得为事件数量截断对白。",
+          "source": "ClipTalk/app/prompts.py:232"
+        },
+        {
+          "title": "多版本只是换个裁剪长度",
+          "detail": "同一组镜头改几帧就叫新版本。ClipTalk 要求版本名本身即策略约束，每版至少更换一个候选或明显改变镜头结构；候选不足时如实说明，不制造伪差异。",
+          "source": "ClipTalk/app/prompts.py:213"
+        },
+        {
+          "title": "没问剧透策略就开剪",
+          "detail": "赛事和纪实里结果放在哪一秒是产品级决策。ai-video-editor 把 spoiler policy 列为 narrative-documentary 场景“缺了必须问”的五个问题之一，并写进分类策略。",
+          "source": "ai-video-editor/skills/edit-timeline-studio/references/auto-edit-scenarios.md:119"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/prompts.py",
+          "line": 328,
+          "why": "user_brief_prompt 的完整 EditBrief 字段表"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/editing_intent.py",
+          "line": 81,
+          "why": "brief 编译成硬约束契约的实现"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+          "line": 5,
+          "why": "16 类 profile 的事件弧、强信号与拒绝条件矩阵"
+        },
+        {
+          "repo": "FireRed-OpenStoryline",
+          "path": "FireRed-OpenStoryline/prompts/tasks/generate_script/zh/system.md",
+          "line": 44,
+          "why": "脚本字数预算作为硬约束写进 prompt"
+        },
+        {
+          "repo": "video-use",
+          "path": "video-use/SKILL.md",
+          "line": 123,
+          "why": "多 take 选段的 editor 子 agent brief 模板"
+        }
+      ],
+      "children": [
+        {
+          "id": "edit-brief",
+          "title": "EditBrief 字段",
+          "tag": "shared",
+          "summary": "把口语需求变成 15 个可校验字段的结构化简报",
+          "goal": "下游选片、排序、质量门都要读同一份契约。字段不落地，返修时无法判断“不符合用户要求”还是“模型自己发挥”。",
+          "inputs": [
+            "用户指令文本",
+            "UI 选项：事件数量、目标时长、分析信号、字幕策略"
+          ],
+          "outputs": [
+            "brief JSON",
+            "editingIntent JSON（hardConstraints/softGoals/style/techniquePolicy）"
+          ],
+          "interview": "speakerFocus 必填，用于人物/声纹过滤；includeRules 常含“保留完整语句”。",
+          "sports": "需增加 team、player、比分状态、spoiler policy 字段，ClipTalk 未覆盖。",
+          "mg": "多两个必填字段：platform 决定画布与安全区，source 类型决定 grounding；上屏的每个数字必须回溯 facts.json。",
+          "atomic": [
+            {
+              "name": "brief 字段抽取",
+              "impl": "objective / narrativeGoal / targetDurationSeconds / eventCount / focus / style{pace,tone,allowReorder} / audience / platform / aspectRatio / speakerFocus / includeRules / excludeRules / subtitlePreference / assumptions / confidence",
+              "note": "未提供的字段返回空串、空数组或 auto，并把推断写进 assumptions"
+            },
+            {
+              "name": "硬约束编译",
+              "impl": "hardConstraints: targetSeconds、toleranceSeconds、minimumSeconds、maximumSeconds、eventCount、includeRules、contentExclusions、speakerFocus、preserveCompleteSpeech、preserveCompleteActions、forbidDuplicateSource、aspectRatio",
+              "note": "tolerance=max(2.0, target×ratio)，ratio 夹在 0.03–0.2，默认 0.1"
+            },
+            {
+              "name": "焦点驱动的打分权重",
+              "impl": "softGoals.scoringWeights 默认 visual .24 / speech .18 / emotion .16 / story .20 / goal .22",
+              "note": "focus 含“人物反应/情绪”切 emotion .28；含“金句/信息”切 speech .30"
+            },
+            {
+              "name": "编辑性排除与内容性排除分离",
+              "impl": "_EDITORIAL_EXCLUSIONS 白名单",
+              "note": "“重复镜头、黑屏、拖尾”属编辑常识，不进 contentExclusions 硬门"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把常识排除当硬门",
+              "detail": "用户说“别要黑屏”被编译成 contentExclusions 后，任何含轻微暗场的候选都被硬拒。ClipTalk 用 _EDITORIAL_EXCLUSIONS 把这类词剔出硬门，只留真正的内容排除。",
+              "source": "ClipTalk/app/editing_intent.py:11"
+            },
+            {
+              "title": "目标时长没有容差",
+              "detail": "把 target 当精确值会让优化器不断丢镜头。ClipTalk 编译出 minimumSeconds/maximumSeconds 区间，并在 EDL 层用 target×1.10 作为上限。",
+              "source": "ClipTalk/app/edl_optimizer.py:293"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 328,
+              "why": "brief 输出 JSON 的全部字段名"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/editing_intent.py",
+              "line": 35,
+              "why": "compile_editing_intent 的容差与权重计算"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/editing_intent.py",
+              "line": 239,
+              "why": "选片结果按同一份契约做硬约束校验"
+            }
+          ]
+        },
+        {
+          "id": "interview-planner",
+          "title": "访谈 Planner",
+          "tag": "interview",
+          "summary": "按问答与语义单元切访谈，评估内容价值",
+          "goal": "长访谈的高光不是画面变化，而是观点、故事和冲突。需要一个专门的 Planner 把 transcript 切成可独立成立的语义单元并排序。",
+          "inputs": [
+            "word-level transcript",
+            "说话人分离结果",
+            "OCR 问题卡"
+          ],
+          "outputs": [
+            "topic / quote / story 语义单元",
+            "question→answer 绑定关系",
+            "内容价值评分"
+          ],
+          "interview": "答案脱离提问会改变含义时，question 必须一起进片或用桥接文案补。",
+          "atomic": [
+            {
+              "name": "问答弧",
+              "impl": "OpenChatCut profile-matrix 的 interview/podcast 行",
+              "note": "arc=question→answer→evidence/example→conclusion；拼接答案改变含义即拒绝"
+            },
+            {
+              "name": "语义单元切分",
+              "impl": "ClipTalk transcript unit 合并规则",
+              "note": "gap≥0.8s、说话人切换或句末标点才切，且需先达到 minimum 时长"
+            },
+            {
+              "name": "问题证据检测",
+              "impl": "ClipTalk question_evidence（spoken + screen 双源）",
+              "note": "OCR 问题卡按问号、题头标签、版面位置打分，再与口播问题合并"
+            },
+            {
+              "name": "最佳 take 选择",
+              "impl": "montaj select-takes（跨文件唯一有全局视野的一步）",
+              "note": "完整>截断、无中途重启、少 filler、并列时取最后一遍"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "金句需要缺失的上下文",
+              "detail": "最可引用的一句往往依赖前一句设定。OpenChatCut 明确规定：需要被省略上下文才能成立的引用直接拒绝，不靠标题补救。",
+              "source": "OpenChatCut/src/agent/skills/long-video-to-shorts/SKILL.md:45"
+            },
+            {
+              "title": "选中的 take 内部还在结巴",
+              "detail": "选了“最好的一遍”不代表干净。montaj 要求对选中区间再扫一次 3 词以上的重复短语，只保留最后一次出现并把入点前移，自动步骤抓不到这类口吃。",
+              "source": "montaj/skills/select-takes/SKILL.md:57"
+            },
+            {
+              "title": "Speaker 编号当成身份",
+              "detail": "diarization 只有一个 Speaker 1 时把它绑成某人是错的。ClipTalk 要求至少 2 个可区分说话人才允许人脸-说话人绑定，且 Speaker 编号不得推断性别或身份。",
+              "source": "ClipTalk/app/active_speaker.py:256"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+              "line": 11,
+              "why": "interview/podcast 的事件弧与拒绝条件"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/select-takes/SKILL.md",
+              "line": 46,
+              "why": "多 take 选择的四条优先级规则"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/question_evidence.py",
+              "line": 88,
+              "why": "屏幕问题卡的打分与合并实现"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/content_search.py",
+              "line": 985,
+              "why": "语义单元合并的 gap/说话人/句末三条件"
+            }
+          ]
+        },
+        {
+          "id": "sports-planner",
+          "title": "赛事 Planner",
+          "tag": "sports",
+          "summary": "按比赛回合切分，区分刺激度与比赛重要性",
+          "goal": "赛事高光要同时回答“好看吗”“重要吗”“放在第几段”。现有仓库只有事件弧和信号清单，比分状态机与剧透优化器需自研。",
+          "inputs": [
+            "解说 transcript",
+            "音频能量与人声峰值",
+            "记分牌 OCR",
+            "回放转场检测"
+          ],
+          "outputs": [
+            "回合级事件（buildup/decisive play/result/replay/reaction）",
+            "刺激度 / 比赛重要性 / 叙事位置三分",
+            "spoiler 风险标记"
+          ],
+          "sports": "结果镜头必须带 buildup，replay 不能当 live；比分、球员、队伍错配即硬拒。",
+          "atomic": [
+            {
+              "name": "赛事事件弧",
+              "impl": "OpenChatCut profile-matrix 的 esports/sports 行",
+              "note": "buildup→decisive play→result→replay/reaction；强信号含记分牌与解说能量"
+            },
+            {
+              "name": "解说能量召回",
+              "impl": "ClipTalk waveform_hotspot_candidates",
+              "note": "RMS 峰值 ≥ max(0.018, 中位数×2.2) 触发，±3.5 秒窗口，最多 4 个"
+            },
+            {
+              "name": "比分状态机",
+              "impl": "无（需自研：OCR 记分牌 + 时钟 + 比分跳变对齐事件）",
+              "note": "现有仓库只在 profile 表里把 scoreboard 列为信号，没有实现"
+            },
+            {
+              "name": "剧透策略优化器",
+              "impl": "无（需自研：给定 spoiler policy 求结果镜头的最优位置）",
+              "note": "现有仓库只把 spoiler policy 当一个要问用户的问题"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "回放被当成现场",
+              "detail": "慢镜和多机位回放与直播画面高度相似，直接进片会造成“同一进球发生两次”。OpenChatCut 把 replay mistaken for live action 列为 esports/sports 的拒绝条件。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:9"
+            },
+            {
+              "title": "反应镜头没有触发事件",
+              "detail": "只剪教练和观众的表情，观众看不懂发生了什么。gaming/sports 行明确拒绝“reaction without the triggering event”和“result without buildup”。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:8"
+            },
+            {
+              "title": "裁切把记分牌切掉",
+              "detail": "横转竖时统一裁中间会丢掉角落的记分牌和 UI。OpenChatCut 要求按镜头分段选裁切，并把“crop 隐藏 scoreboard/UI”列为选片前硬门。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:57"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+              "line": 9,
+              "why": "esports/sports 的事件弧、信号与拒绝条件"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 641,
+              "why": "音频能量峰值召回的真实阈值实现"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md",
+              "line": 5,
+              "why": "把检测分与编辑价值分开的七个维度"
+            }
+          ]
+        },
+        {
+          "id": "script-schema",
+          "title": "脚本单元 schema",
+          "tag": "shared",
+          "summary": "每个脚本单元写清职责、事实、依赖与目标时长",
+          "goal": "脚本必须能被机器校验：选片时知道要找什么，排序时知道谁依赖谁，审片时知道哪条没兑现。散文式脚本做不到。",
+          "inputs": [
+            "EditBrief",
+            "候选事件列表"
+          ],
+          "outputs": [
+            "HighlightUnit[]：purpose、sourceFact、bridgeText、durationTarget、requiredContext、candidateIds、energy、transitionIntent"
+          ],
+          "interview": "requiredContext 常指向 question id；bridgeText 只在跨话题时才允许非空。",
+          "sports": "energy 与 transitionIntent 决定高潮位置；requiredContext 指向 buildup 镜头。",
+          "mg": "单元换成 storyboard scene：beat、technique、transitionOut，onScreen 每条必带 role。",
+          "atomic": [
+            {
+              "name": "职责枚举",
+              "impl": "ClipTalk structure: hook / context / development / climax / reaction / result",
+              "note": "sequence 中每个镜头必须带 role，且 role 决定能否变速与是否可删"
+            },
+            {
+              "name": "依赖关系字段",
+              "impl": "ClipTalk requires_candidate_indices / leads_to_candidate_indices / standalone / emotion_direction",
+              "note": "由事件导演一次性判定，排序器不得违反 relations 把结果放到上下文之前"
+            },
+            {
+              "name": "slot 描述与检索词分离",
+              "impl": "OpenMontage scene_plan.metadata.slots[]",
+              "note": "description 给向量检索，queries（2–3 条、≤5 词）给素材站搜索，二者不可混用"
+            },
+            {
+              "name": "章节分组",
+              "impl": "llm-video-maker storyboard.chapters[]",
+              "note": "chapter 是可独立重做的单位，重的转场只放在章节边界"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "用检测器名当事件标题",
+              "detail": "“画面变化热点”“声音能量热点”是召回线索不是事件。ClipTalk 维护 _GENERIC_SIGNAL_TITLES 与正则，标题命中即判为 recall_only，不允许进入成片事件层。",
+              "source": "ClipTalk/app/event_groups.py:27"
+            },
+            {
+              "title": "slot 写成意图而不是画面",
+              "detail": "“表现孤独感”这种描述 CLIP 检索不到东西。OpenMontage 要求 slot description 用具体名词加形容词的画面语言，像给资料员描述镜头一样写。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/scene-director.md:298"
+            },
+            {
+              "title": "脚本里自填秒数",
+              "detail": "模型写“这里大约 5 秒”，与实际 source_start/source_end 算出的时长对不上。ClipTalk 规定 narrative 只写叙事意图，时长由系统按源区间计算并显示。",
+              "source": "ClipTalk/app/prompts.py:230"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 176,
+              "why": "事件分组的镜头依赖字段定义"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 249,
+              "why": "plans[].sequence 的完整 schema"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/pipelines/documentary-montage/scene-director.md",
+              "line": 123,
+              "why": "slot description 与 queries 的职责分离"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/SKILL.md",
+              "line": 170,
+              "why": "storyboard 的章节与场景结构"
+            }
+          ]
+        },
+        {
+          "id": "duration-budget",
+          "title": "时长与字数预算",
+          "tag": "shared",
+          "summary": "先分配秒数再写字，字数由秒数反推",
+          "goal": "旁白写完再配画面必然对不上。必须先把总时长拆到组，再用“每秒多少字”把秒数换成硬字数区间，交给写手模型。",
+          "inputs": [
+            "目标总时长",
+            "分组后的 clip 时长"
+          ],
+          "outputs": [
+            "每组 duration_sec",
+            "script_chars_budget（min~max）",
+            "hold table"
+          ],
+          "interview": "旁白极少；预算主要用于控制每段问答的秒数上限。",
+          "sports": "预算按事件重要性分配，高潮回合拿 max hold，过渡回合压到 base。",
+          "mg": "预算换成阅读负载：上屏字数 ≤ 3.5×场景秒数，旁白 2.3–2.6 词/秒，单场景 2.5–6s，先数字数再锁时长。",
+          "atomic": [
+            {
+              "name": "字数预算公式",
+              "impl": "OpenStoryline _estimate_script_budget",
+              "note": "min=秒数×3、max=秒数×5（中文），min 不低于 8，max 至少 min+6"
+            },
+            {
+              "name": "分组时长约束",
+              "impl": "OpenStoryline group_clips prompt",
+              "note": "单组 2–4 个片段，总时长 3–20 秒，>10 秒长镜头可单独成组"
+            },
+            {
+              "name": "hold table",
+              "impl": "OpenMontage edit-director 按 tone 查表",
+              "note": "elegiac 4.0/2.5/7.0s，urgent 1.2/0.5/2.5s"
+            },
+            {
+              "name": "预算越界处理",
+              "impl": "OpenMontage：总 hold 必须落在 ±10%，超了先压非 hero",
+              "note": "永远不为凑时长压缩 hero slot"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "字数超了直接截断",
+              "detail": "OpenStoryline 在 max_chars×2.0 时才兜底截断，截断会把句子砍在半截。真正的解法是把预算写进 prompt 作为硬约束，而不是事后剪字符串。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/generate_script.py:124"
+            },
+            {
+              "title": "按信息密度而不是节奏切",
+              "detail": "“这个必须讲到”不是保留理由。OpenMontage 把“按信息密度而非节奏剪”列为首要坑：撑不起一个 hold 的画面就不该占位置。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md:335"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/generate_script.py",
+              "line": 178,
+              "why": "秒数换算字数的真实公式"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/prompts/tasks/group_clips/zh/system.md",
+              "line": 35,
+              "why": "单组片段数与时长的硬约束"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md",
+              "line": 64,
+              "why": "按 tone 查表的 base/min/max hold"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/SKILL.md",
+              "line": 203,
+              "why": "阅读负荷预算：字数 ≤ 3.5 × 场景秒数"
+            }
+          ]
+        },
+        {
+          "id": "script-approval",
+          "title": "多版本与审批",
+          "tag": "decision",
+          "summary": "脚本是人最后一次低成本改方向的地方",
+          "goal": "渲染之后再改代价最大。必须在脚本层给出真实不同的多版本，并设一个明确的审批点，把“方向错了”挡在渲染前。",
+          "inputs": [
+            "候选池",
+            "EditBrief"
+          ],
+          "outputs": [
+            "多个 plan（label + narrative + structure + sequence）",
+            "checkpoint 状态：pending / awaiting_human / completed"
+          ],
+          "interview": "版本差异通常是“观点优先”与“故事优先”的取舍。",
+          "sports": "版本差异通常是“悬念保留”与“结果先行”的 spoiler 策略取舍。",
+          "atomic": [
+            {
+              "name": "版本策略约束",
+              "impl": "ClipTalk llm_edit_plan_prompt 的 variants",
+              "note": "版本名本身是策略约束，必须先说取舍再设计结构"
+            },
+            {
+              "name": "审批门",
+              "impl": "OpenMontage stage.checkpoint_required + human_approval_default",
+              "note": "documentary-montage 在 idea/scene_plan/assets/edit 四个阶段默认要人审"
+            },
+            {
+              "name": "阶段返工上限",
+              "impl": "OpenMontage orchestration: max_revisions_per_stage=3、max_send_backs=2",
+              "note": "配合 budget_default_usd=1.00 与 max_wall_time_minutes=60 一起限流"
+            },
+            {
+              "name": "审批要点清单",
+              "impl": "OpenMontage stage.review_focus / success_criteria",
+              "note": "人审不是自由发挥，每个阶段有可勾选的验收项"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "重大改动悄悄自作主张",
+              "detail": "用户说不要旁白，Agent 觉得片子太单薄就加了配音。OpenMontage 把这类“安静替换”定为需要审批的重大改动，并在多个 director skill 里重复警告。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/executive-producer.md:88"
+            },
+            {
+              "title": "工具跑通就当交付",
+              "detail": "渲染成功不等于内容成立。OpenChatCut 明确：工具成功只证明操作跑了，完成需要证据证明成片真实、连贯、技术合格并符合 profile 与目标。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:3"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/pipeline_defs/documentary-montage.yaml",
+              "line": 18,
+              "why": "阶段返工与 send-back 上限"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/docs/ARCHITECTURE.md",
+              "line": 265,
+              "why": "三种检查点策略：引导、全人审、非创意自动"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 211,
+              "why": "多版本必须有真实差异的 prompt 硬规则"
+            }
+          ]
+        },
+        {
+          "id": "narration-bridge",
+          "title": "旁白与桥接",
+          "tag": "decision",
+          "summary": "只有跨事件断裂时才写桥接文案",
+          "goal": "集锦的默认形态是原声加事件结构。旁白是补丁不是产品，写多了会掩盖选片失败，并引入不可验证的事实。",
+          "inputs": [
+            "脚本单元列表",
+            "相邻单元的 seam 检查结果"
+          ],
+          "outputs": [
+            "bridgeText（多数为 null）",
+            "voiceover 需求标记"
+          ],
+          "interview": "答案脱离提问才需要一句桥接；能用提问原声就不要写旁白。",
+          "sports": "比分、时间、球员名必须来自 OCR 或解说原声，不得由旁白补足。",
+          "mg": "旁白是常态不是补丁。audio-first 先生成 TTS，再用 ffprobe 实测时长反锁场景，尾部留 0.4–0.8s 呼吸。",
+          "atomic": [
+            {
+              "name": "seam 冗余检查",
+              "impl": "montaj select-takes 第 7 步",
+              "note": "读 N 的末句与 N+1 的首句，同一事实说两遍就裁掉冗余那侧"
+            },
+            {
+              "name": "关键信息保真",
+              "impl": "OpenStoryline generate_script 创作原则 2",
+              "note": "专有名词、IP、具体事件必须保留，禁止泛化，禁止括号和省略号"
+            },
+            {
+              "name": "默认无旁白",
+              "impl": "OpenMontage documentary-montage cross-stage rule",
+              "note": "画面能说清就不要用文字或配音解释；加旁白属重大改动"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "跳过接缝检查",
+              "detail": "每段单独选都是“最好的一遍”，接缝处却把同一个事实说了两次。montaj 强调没有任何自动步骤能抓到跨段冗余，必须成对读相邻边界后再写 spec。",
+              "source": "montaj/skills/select-takes/SKILL.md:153"
+            },
+            {
+              "title": "旁白盖住选片失败",
+              "detail": "素材没选好就用解说圆场。OpenMontage 直接写“Fix the edit, don't paper over it”，把因为片子显薄而加旁白列为必须先问用户的行为。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md:340"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/select-takes/SKILL.md",
+              "line": 74,
+              "why": "相邻段落叙事重叠的检查流程"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/prompts/tasks/generate_script/zh/system.md",
+              "line": 40,
+              "why": "旁白的信息保真与标点硬规则"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/pipelines/documentary-montage/executive-producer.md",
+              "line": 70,
+              "why": "默认无旁白，加配音需用户批准"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recall",
+      "title": "按脚本召回",
+      "tag": "shared",
+      "summary": "为脚本每个 slot 找足够多、足够杂的候选片段",
+      "goal": "选片质量的上限由候选池决定。必须用多路信号高召回、宽边界地把可能有用的区间捞出来，并留下可追溯的证据，再交给精修和排序去砍。",
+      "inputs": [
+        "脚本 slot / HighlightUnit 列表",
+        "transcript、shot 边界、人脸与声纹、视觉 embedding、音频能量、OCR"
+      ],
+      "outputs": [
+        "候选台账：sourceRange、profile、arc、evidence、missingEvidence、riskFlags、confidence",
+        "每个 slot 的 top-k + 替补名单",
+        "拒绝理由日志 rejected_picks"
+      ],
+      "interview": "入口以 transcript 与 speaker 为主，视觉只做验证；召回单位是完整语义单元。",
+      "sports": "入口以音频能量、画面变化、记分牌跳变为主；transcript 只做解说佐证。",
+      "mg": "没有素材召回。替代物是配方与组件检索：shotcraft 的 157 张镜头卡、hyperframes 的 155 个 registry block。",
+      "atomic": [
+        {
+          "name": "谓词化检索",
+          "impl": "ClipTalk PREDICATE_KINDS + RELATION_TYPES",
+          "note": "把自然语言编译成可组合的 all/any/not 逻辑与时间关系，再落到各模态"
+        },
+        {
+          "name": "多信号召回器",
+          "impl": "ClipTalk speech_signal / visual_change / waveform_hotspot",
+          "note": "三路各自产候选并标 semantic_status=recall_only，等视觉模型确认"
+        },
+        {
+          "name": "向量融合检索",
+          "impl": "OpenMontage ClipCorpus._fused_sims",
+          "note": "score=(1-w)×visual + w×tag，调用点 w=0.3，即视觉 70% 标签 30%"
+        },
+        {
+          "name": "三遍分层扫描",
+          "impl": "OpenChatCut overview → candidate → verification",
+          "note": "只在 top 候选附近做密集取证，避免长上下文丢中间内容"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "召回信号当成事件",
+          "detail": "音频峰值和画面变化只是线索。ClipTalk 给这三路候选打 recall_only，EDL 优化器会把 semanticStatus=recall_only 或 candidateOrigin 属于三类信号的候选整体过滤掉，绝不进成片。",
+          "source": "ClipTalk/app/edl_optimizer.py:170"
+        },
+        {
+          "title": "对空 corpus 做排序",
+          "detail": "索引没建好就 rank，会拿到空列表或形状错误。OpenMontage 要求每次 build 之后先调 stats，确认 rows≥50、mean_motion_score≥1.0 再排序。",
+          "source": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md:452"
+        },
+        {
+          "title": "忘了 exclude_ids",
+          "detail": "不排除已用片段时，同一条“最好”的素材会赢下每个 slot，成片变成一张图的幻灯片。OpenMontage 把它列为检索环节的固定坑。",
+          "source": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md:458"
+        },
+        {
+          "title": "把缺失模态当低分",
+          "detail": "没有弹幕、没有遥测就给低分会系统性埋没好片段。OpenChatCut 规定缺失的可选证据标 unavailable，并在实际存在的证据上重新分配权重。",
+          "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:46"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/pipeline.py",
+          "line": 551,
+          "why": "三路 recall_only 候选生成器的真实阈值"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/content_query.py",
+          "line": 11,
+          "why": "12 类检索谓词与 10 类时间关系的枚举"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+          "line": 5,
+          "why": "overview/candidate/verification 三遍扫描"
+        },
+        {
+          "repo": "OpenMontage",
+          "path": "OpenMontage/lib/corpus.py",
+          "line": 234,
+          "why": "视觉与标签双通道融合相似度实现"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md",
+          "line": 66,
+          "why": "候选证据台账的字段清单"
+        }
+      ],
+      "children": [
+        {
+          "id": "semantic-entry",
+          "title": "语义检索入口",
+          "tag": "shared",
+          "summary": "把一句话编译成可组合的多模态谓词查询",
+          "goal": "“找他讲定价的那段”既是语义检索又是人物过滤。需要一个统一的查询计划层，把不同模态的入口拼成一个可解释的逻辑式。",
+          "inputs": [
+            "用户查询或 slot 描述",
+            "各模态索引"
+          ],
+          "outputs": [
+            "queryPlan：predicates + logic + relations + result.mode"
+          ],
+          "interview": "常用 speech.semantic + person.speaking + question.evidence 组合。",
+          "sports": "常用 visual.action + audio.event + screen_text.text（记分牌）组合。",
+          "atomic": [
+            {
+              "name": "谓词类型",
+              "impl": "speech.semantic / speech.exact / speech.dialogue_role / question.evidence / screen_text.text / visual.semantic / visual.object / visual.action / audio.event / audio.semantic / person.appearance / person.speaking",
+              "note": "每类谓词映射到一个 modality，决定要跑哪些识别算子"
+            },
+            {
+              "name": "逻辑与关系",
+              "impl": "LOGIC_OPERATORS={predicate,all,any,not}；RELATION_TYPES 含 within/contains/during/same_shot/same_event/responds_to",
+              "note": "responds_to 专门表达“回答了某个问题”，是访谈检索的关键"
+            },
+            {
+              "name": "结果模式",
+              "impl": "resultMode = top_k | exhaustive",
+              "note": "只有用户说“全部/每一次/不要遗漏”才用 exhaustive，其余一律 top_k"
+            },
+            {
+              "name": "人物与声纹入口",
+              "impl": "ClipTalk person.appearance / person.speaking + voiceprint",
+              "note": "person.speaking 需同时跑 track_face 与 active_speaker_link 才成立"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "top_k 被当成全量扫描",
+              "detail": "用户说“找一下他提到价格的地方”，模型逐帧穷举，代价爆炸。ClipTalk 在意图 prompt 里规定：素材范围是全片只表示检索范围，排序型要求一律 top_k。",
+              "source": "ClipTalk/app/content_search.py:217"
+            },
+            {
+              "title": "人物出镜与人物说话混用",
+              "detail": "只做人脸检索会把他在场但没说话的段落一起返回。ClipTalk 用 person.speaking 单独建模，并要求补跑 active_speaker_link 算子才允许使用该证据。",
+              "source": "ClipTalk/app/content_query.py:639"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/content_query.py",
+              "line": 11,
+              "why": "谓词与关系类型的完整枚举"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/content_query.py",
+              "line": 635,
+              "why": "谓词到识别算子的映射与前置依赖"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/content_search.py",
+              "line": 222,
+              "why": "意图 JSON 的完整 schema 与 queryPlan 字段"
+            }
+          ]
+        },
+        {
+          "id": "multi-signal-recall",
+          "title": "多信号高召回",
+          "tag": "shared",
+          "summary": "语音、画面变化、音频能量三路并行捞候选",
+          "goal": "单靠 VLM 粗看会漏掉安静的信息揭露和无字幕的爆发。需要几路便宜的检测器兜底，宁可多召回再让语义模型否掉。",
+          "inputs": [
+            "SenseVoice/ASR 分段",
+            "抽样帧",
+            "全片 RMS 波形"
+          ],
+          "outputs": [
+            "HighlightCandidate[]（candidateOrigin + semanticStatus=recall_only）"
+          ],
+          "interview": "speech_signal 是主力：完整对白、情绪标签、笑声掌声都能触发。",
+          "sports": "waveform 与 visual_change 是主力：解说爆发和镜头切换对应关键回合。",
+          "atomic": [
+            {
+              "name": "speech_signal 召回",
+              "impl": "时长 0.8–45 秒且有文本；score=74+min(10, 字数/14)",
+              "note": "非中性情绪 +8；掌声/笑声/哭/咳 +7；文本<8 字且无情绪无事件则丢弃；最多 4 个"
+            },
+            {
+              "name": "visual_change 召回",
+              "impl": "帧转 96×54 灰度求相邻差；阈值取第 72 百分位",
+              "note": "中心间隔<5 秒去重，窗口 ±4 秒，boundary_confidence=0.35，最多 5 个"
+            },
+            {
+              "name": "waveform 召回",
+              "impl": "RMS ≥ max(0.018, 中位数×2.2)",
+              "note": "窗口 ±3.5 秒，peak ±0.8 秒，boundary_confidence=0.4，最多 4 个"
+            },
+            {
+              "name": "分数校准",
+              "impl": "ClipTalk calibrate_page_candidate_scores",
+              "note": "不同联系表页各自打分会漂移，用百分位重标定后再统一排序"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "召回候选直接进片",
+              "detail": "三路检测器的 boundary_confidence 只有 0.35–0.9，标题也是通用词。ClipTalk 要求精修阶段必须改成具体事件标题，改不出来就 keep=false，且 recall_only 不参与本地兜底。",
+              "source": "ClipTalk/app/event_groups.py:47"
+            },
+            {
+              "title": "音频峰值不等于精彩",
+              "detail": "掌声、垫乐、噪声都会造成 RMS 峰值。OpenChatCut 规定音频峰值只是候选信号，必须验证它对应一个有意义的源事件才能进排名。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:27"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 551,
+              "why": "speech_signal 打分与丢弃规则"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 603,
+              "why": "visual_change 的百分位阈值与去重"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/event_groups.py",
+              "line": 34,
+              "why": "recall_only origin 集合与语义门"
+            }
+          ]
+        },
+        {
+          "id": "three-pass-scan",
+          "title": "分层三遍扫描",
+          "tag": "shared",
+          "summary": "先画地图再找候选，最后只在候选附近取密证",
+          "goal": "一次把几小时素材塞进模型会丢中间内容，切太碎又丢因果。分层扫描是长视频唯一可扩展的读法。",
+          "inputs": [
+            "全片 transcript",
+            "稀疏帧与音频摘要"
+          ],
+          "outputs": [
+            "stream map（分段 + profile + confidence + 实体状态）",
+            "候选区间",
+            "密集取证结果"
+          ],
+          "interview": "分段依据是话题、说话人、提问轮次；地图必须覆盖首中尾。",
+          "sports": "分段依据是回合、节次、比分变化；混合场景标 mixed 并记两个 profile。",
+          "atomic": [
+            {
+              "name": "overview pass",
+              "impl": "分段读 transcript + 稀疏视听摘要",
+              "note": "输出分段、实体、活动、profile 变化；此阶段禁止排名"
+            },
+            {
+              "name": "candidate pass",
+              "impl": "在每个 section 内套用 profile 与 objective 规则",
+              "note": "产出与源时间对齐的事件区间及其证据"
+            },
+            {
+              "name": "verification pass",
+              "impl": "只对 top 候选做密集取证",
+              "note": "每候选一次 view_asset_frames，最多 6 帧覆盖开场/峰值/落点/一次转场"
+            },
+            {
+              "name": "首片验证门",
+              "impl": "OpenChatCut first-clip gate",
+              "note": "新素材或新风格先做完一条最强的，验证通过再批量套用"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "地图只覆盖话多的地方",
+              "detail": "transcript 密集的段落容易被过度采样，安静但视觉重要的段落被忽略。OpenChatCut 要求地图必须覆盖首中尾，且不得偏向 transcript 丰富区。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md:38"
+            },
+            {
+              "title": "一张缩略图当整段证据",
+              "detail": "用一帧代表十几秒会误判主体可见性与裁切可行性。OpenChatCut 规定要分别采样开场、峰值、落点和转场，而不是把一张图当作整段的证明。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:23"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+              "line": 5,
+              "why": "三遍扫描的分工与长上下文取舍"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md",
+              "line": 28,
+              "why": "stream map 的五步构建流程"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+              "line": 48,
+              "why": "first-clip gate：先证一条再批量"
+            }
+          ]
+        },
+        {
+          "id": "corpus-vector",
+          "title": "素材库与向量",
+          "tag": "shared",
+          "summary": "为每个 slot 建足够大的检索索引并做多样性重排",
+          "goal": "候选池太小会逼着 Agent 在一堆烂片里挑最好的。索引规模、分数门槛和多样性重排三件事必须一起定量。",
+          "inputs": [
+            "slot description（语义文本）",
+            "clip 视觉 embedding 与标签 embedding"
+          ],
+          "outputs": [
+            "每 slot top-k 及分数",
+            "corpus_stats",
+            "diversify 后的最终名单"
+          ],
+          "interview": "corpus 就是本片自身的语义单元库，检索靠 transcript embedding。",
+          "sports": "corpus 是本场比赛的回合库，需要 motion 过滤掉静止的看台空镜。",
+          "mg": "corpus 不是本片素材，是离线组件库加 stock provider（Iconify、Pexels、Freesound），命中靠卡名与类别而非向量。",
+          "atomic": [
+            {
+              "name": "corpus 规模",
+              "impl": "OpenMontage: 8–12 倍 slot 数",
+              "note": "验收线是 rows ≥ 8×slot；rows<50 视为太小，mean_motion_score<1.0 视为全静态"
+            },
+            {
+              "name": "融合权重与过滤",
+              "impl": "rank_by_text(tag_weight=0.3, motion_min=1.5, kind, exclude_ids)",
+              "note": "视觉 70% + 标签 30%，motion_min 在检索层就挡掉“死片”"
+            },
+            {
+              "name": "分数门槛",
+              "impl": "≥0.30 可用，0.22–0.30 需人判，<0.22 视为库里没有",
+              "note": "低于 0.22 不许硬选，改为补检索；每个弱 slot 最多两轮扩库"
+            },
+            {
+              "name": "MMR 多样性",
+              "impl": "find_similar_set(diversity=0.3, candidate_pool=30)",
+              "note": "score=(1-λ)·sim(seed)-λ·max sim(已选)；相邻 slot 另跑 diversify"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "拿 queries 当排序文本",
+              "detail": "queries 是给素材站 API 的短搜索词，description 才是给 CLIP 的语义文本。OpenMontage 明确二者不同，排序必须用 description，混用会显著降低命中率。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md:467"
+            },
+            {
+              "title": "diversify 退化成原顺序",
+              "detail": "位置项没归一化时，绝对下标随池增大而膨胀，压过余弦项。OpenMontage 在注释里记录：默认 0.5 下候选需要相似度差 >1.0 才可能被选中，函数实际退化成输入顺序。",
+              "source": "OpenMontage/lib/corpus.py:405"
+            },
+            {
+              "title": "无限扩库",
+              "detail": "分数上不去就一直加查询，成本失控。OpenMontage 规定每个弱 slot 最多两轮扩库，仍不达标就说明这个镜头在开放素材里不存在，应改 slot。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md:464"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/lib/corpus.py",
+              "line": 247,
+              "why": "rank_by_text 的融合权重与过滤参数"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/lib/corpus.py",
+              "line": 317,
+              "why": "MMR find_similar_set 的公式与默认 λ"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md",
+              "line": 238,
+              "why": "corpus 8–12 倍 slot 数的预算规则"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/pipeline_defs/documentary-montage.yaml",
+              "line": 110,
+              "why": "把 corpus≥8×slot、score≥0.22 写成阶段验收项"
+            }
+          ]
+        },
+        {
+          "id": "candidate-ledger",
+          "title": "候选台账",
+          "tag": "atomic",
+          "summary": "每个候选带证据、缺口、风险和拒绝理由入账",
+          "goal": "选片必须可复现、可解释。没有台账，返修时无法知道替补是谁、为什么当初没选它。",
+          "inputs": [
+            "各路召回结果",
+            "密集取证结果"
+          ],
+          "outputs": [
+            "candidate ledger",
+            "rejected_picks 日志",
+            "替补名单"
+          ],
+          "interview": "台账里要记 speaker、引用原文和该引用是否自足。",
+          "sports": "台账里要记回合编号、比分状态和该镜头是 live 还是 replay。",
+          "mg": "台账换成 assets.manifest.json 加逐文件 .credit.json 边车，记 provider、来源与授权；缺授权直接拒收。",
+          "atomic": [
+            {
+              "name": "台账字段",
+              "impl": "sourceRange、profile、profileConfidence、event、arc{setup,peak,payoff}、evidence{speech,visual,audio,interaction,metadata}、missingEvidence、openingHook、standaloneReason、riskFlags、targetDuration、packaging",
+              "note": "OpenChatCut 的 JSON 模板，是精修与排序的共同输入"
+            },
+            {
+              "name": "证据分级",
+              "impl": "ClipTalk evidenceFacts / evidenceScores / relations / safeRanges / uncertainty",
+              "note": "uncertainty.requiresDynamicReview=true 的镜头必须在 warnings 中说明"
+            },
+            {
+              "name": "拒绝理由日志",
+              "impl": "OpenMontage asset_manifest.metadata.rejected_picks",
+              "note": "高分却没选要写明原因（年代不对、过曝、情绪不符），排序阶段会读它"
+            },
+            {
+              "name": "被拒不给分",
+              "impl": "OpenChatCut：rejected candidate receives a reason, not a score",
+              "note": "硬门失败的候选不进入排名，也不为凑数放宽门槛"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "只留分数不留证据",
+              "detail": "没有逐项证据的总分无法复现，也无法在返修时判断。OpenChatCut 要求每个维度保留一句证据笔记，没有笔记的总分视为不可复现。",
+              "source": "OpenChatCut/src/agent/skills/long-video-to-shorts/references/short-form-selection.md:60"
+            },
+            {
+              "title": "丢失素材出处",
+              "detail": "候选进入时间线后找不到 provider、原始 URL 和授权，发布环节直接卡住。OpenMontage 把 provenance 列为清单里的不可协商项。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md:475"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/SKILL.md",
+              "line": 70,
+              "why": "候选台账 JSON 模板"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md",
+              "line": 421,
+              "why": "rejected_picks 日志结构与用途"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/long-video-to-shorts/references/short-form-selection.md",
+              "line": 73,
+              "why": "先拒绝后排名，被拒只给理由不给分"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "refine",
+      "title": "语义确认与边界",
+      "tag": "shared",
+      "summary": "把粗召回区间收敛成语义完整、可安全下刀的片段",
+      "goal": "候选区间边界来自检测器，几乎必然切在词中间或动作中途。这一步负责用词级和事件级证据把边界钉死，并用硬门淘汰不可用的片段。",
+      "inputs": [
+        "候选台账与粗区间",
+        "word-level transcript、VAD 静音区间、shot 边界、峰值帧"
+      ],
+      "outputs": [
+        "safeStart/safeEnd、peak 范围、minimumKeepSeconds、boundaryConfidence",
+        "speechUnits 与 boundarySource",
+        "硬门拒绝清单与评分 rubric 结果"
+      ],
+      "interview": "边界吸附到句首、停顿或说话人轮次；禁止切断否定词与专名。",
+      "sports": "边界从 peak 向前扩到 setup、向后扩到 payoff；结果状态必须稳定出现。",
+      "mg": "没有边界精修。对应动作是缓动调参：禁线性插值，入场必须 2–3 个属性同动，错峰 3–6 帧，退场比入场快一倍。",
+      "atomic": [
+        {
+          "name": "词级安全区",
+          "impl": "ClipTalk semantic_safe_range",
+          "note": "落在语句内部就向外扩到最近静音端点或整句边界，只扩不缩"
+        },
+        {
+          "name": "词锚点查询",
+          "impl": "premiere-agent find_quote.py",
+          "note": "返回前后词边界与 cut_window 安全裁剪窗"
+        },
+        {
+          "name": "事件峰值扩展",
+          "impl": "ClipTalk boundary_refinement_prompt",
+          "note": "输出 peak 范围、minimumKeep 与边界置信度"
+        },
+        {
+          "name": "硬门与 rubric",
+          "impl": "OpenChatCut hard gates + 10 维 0–5 分",
+          "note": "高分永远不能覆盖失败的硬门；缺失模态记 unavailable"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "为凑时长缩短语句",
+          "detail": "时长不够就把句子截半是最常见劣化。ClipTalk 的安全区函数注释写明：它只扩不缩，宁可让后续选择器整段丢掉这个事件，也不切碎一句完整表达。",
+          "source": "ClipTalk/app/edit_boundaries.py:76"
+        },
+        {
+          "title": "把整段 VLM 窗口当最小保留",
+          "detail": "一个候选常含多句完整话，把整窗当 minimumKeep 会让目标时长里塞不下第二个事件。ClipTalk 只保留视觉峰值所在那一句作为下限。",
+          "source": "ClipTalk/app/edit_boundaries.py:175"
+        },
+        {
+          "title": "把词间隙当成停顿",
+          "detail": "阈值设得比正常发音间隙还低时，流畅的一句话会被切成好几段，接缝处出现咔哒声。premiere-agent 规定阈值下限（Jumpy 250ms）必须高于普通词间隙，<30ms 永远不安全。",
+          "source": "premiere-agent/SKILL.md:217"
+        },
+        {
+          "title": "片尾词末时间不准",
+          "detail": "整段 ASR 常把最后一个词的结束时间标晚 1–2 秒，直接用会拖出一段静场。chatmonteur 要求对结尾切片单独重转一次，取真实词末。",
+          "source": "chatmonteur/skills/cutting.md:115"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/edit_boundaries.py",
+          "line": 69,
+          "why": "语义安全边界的完整实现与状态字段"
+        },
+        {
+          "repo": "premiere-agent",
+          "path": "premiere-agent/helpers/find_quote.py",
+          "line": 536,
+          "why": "cut_window 安全裁剪窗口的定义"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/prompts.py",
+          "line": 105,
+          "why": "边界精修 prompt 的 peak/minimumKeep 硬规则"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+          "line": 48,
+          "why": "排名前的八条硬门"
+        },
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/skills/cutting.md",
+          "line": 106,
+          "why": "按切点类型区分的实测 padding 表"
+        }
+      ],
+      "children": [
+        {
+          "id": "word-boundary",
+          "title": "词级边界与呼吸",
+          "tag": "shared",
+          "summary": "切点落在词边界，并按切点类型留不同 padding",
+          "goal": "语音片段的可用性几乎全由起止两个点决定。必须有确定性的词锚点、按类型区分的留白，以及给音频淡入淡出留出的静音余量。",
+          "inputs": [
+            "word-level transcript（含 type=word/spacing）",
+            "VAD 静音区间"
+          ],
+          "outputs": [
+            "range.start/range.end",
+            "boundarySource",
+            "_padding_params 记录"
+          ],
+          "interview": "句首停顿吸附优先；说话人切换处要留更长的 lead。",
+          "sports": "解说句可让位于画面动作，但不得在否定词或球员名中间断开。",
+          "atomic": [
+            {
+              "name": "词锚点与安全窗",
+              "impl": "safe_in_s=prev_word.end，safe_out_s=next_word.start",
+              "note": "留白夹在安全窗内，两侧各留 60ms 真静音"
+            },
+            {
+              "name": "节奏预设四参数",
+              "impl": "premiere-agent Calm/Measured/Paced/Energetic/Jumpy",
+              "note": "Paced 默认 450/200/200/200 ms；Calm 800/500/500/500 ms 适合访谈"
+            },
+            {
+              "name": "按切点类型 padding",
+              "impl": "chatmonteur 实测表",
+              "note": "句中 100/80ms；句末 200/130–150ms；片尾 trail 600–700ms"
+            },
+            {
+              "name": "静音修剪阈值",
+              "impl": "auto-editor / montaj waveform_trim",
+              "note": "归一化后 0.14、纯人声轨 0.06；margin 0.12s,0.10s"
+            },
+            {
+              "name": "间隙分配公式",
+              "impl": "combined_pad_ms = min(trail+lead, max(0, gap_ms-60))",
+              "note": "按 trail:lead 比例分配，保证相邻两段的 padding 不重新引入被删内容"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "音量低就降阈值",
+              "detail": "对没归一化的素材调低阈值会把词切成碎片。chatmonteur 规定必须先归一化到 -14 LUFS/-1.5 dBTP，永远抬音量而不是降阈值，并在 mean_volume 低于 -24 LUFS 时直接停下告知用户。",
+              "source": "chatmonteur/skills/cutting.md:31"
+            },
+            {
+              "title": "切点用整秒时间轴",
+              "detail": "为省 token 而四舍五入到整秒的时间线只能当作定位窗口，不能当切点。premiere-agent 把“禁止手工 grep 逐字稿 JSON、必须用 find_quote”写成硬规则。",
+              "source": "premiere-agent/SKILL.md:260"
+            },
+            {
+              "title": "语言参数没跟着改",
+              "detail": "对非英语音频用 *.en 模型会把语音误判为静音直接剪掉。montaj 在参数说明里写明非英语值会自动升级到多语种兄弟模型，必须显式传。",
+              "source": "montaj/steps/speech/rm_nonspeech.json"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/SKILL.md",
+              "line": 189,
+              "why": "五档节奏预设的四个真实毫秒值"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/skills/cutting.md",
+              "line": 76,
+              "why": "auto-editor 阈值与 margin 的锁定值和理由"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/SKILL.md",
+              "line": 237,
+              "why": "相邻段 padding 的分配公式"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/docs/schemas/workflow.md",
+              "line": 20,
+              "why": "词间隙 0.10 与句边 0.05 的实际取值"
+            }
+          ]
+        },
+        {
+          "id": "event-boundary",
+          "title": "事件边界",
+          "tag": "shared",
+          "summary": "从峰值向前后扩到 setup 与 payoff 并记最小保留",
+          "goal": "动作类片段没有词边界可用。必须显式标出核心峰值范围和最短保留时长，让下游压时长时知道哪里可以砍、哪里不能砍。",
+          "inputs": [
+            "候选中心与粗窗口",
+            "峰值附近密集帧"
+          ],
+          "outputs": [
+            "start/end、peak_start/peak_end、minimum_keep_seconds、boundary_confidence、keep"
+          ],
+          "interview": "扩展方向是提问与结论；反应镜头可以接在表达之后。",
+          "sports": "先向前扩到 buildup 与规则语境，再向后扩到结果稳定出现和反应。",
+          "atomic": [
+            {
+              "name": "峰值外扩",
+              "impl": "OpenChatCut boundary resolution 五步",
+              "note": "向前扩到 setup/问题/比赛状态，向后扩到结果/反应/乐句收束，再吸附边界"
+            },
+            {
+              "name": "时长区间",
+              "impl": "ClipTalk 精修 prompt",
+              "note": "通常 3–18 秒，确有完整性需要时最长 30 秒；不得把整段节目当一个镜头"
+            },
+            {
+              "name": "动作完整复核",
+              "impl": "ClipTalk composition_evidence_recovery_prompt",
+              "note": "只有亲眼看到动作结束、结果稳定或表达自然结束才返回 complete，否则 unavailable"
+            },
+            {
+              "name": "留手柄",
+              "impl": "OpenMontage：两端各留 4–6 帧",
+              "note": "给合成阶段的淡入淡出留空间，避免裁掉动作本身"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把后续无关动作当结果",
+              "detail": "模型容易把下一个动作误判为本动作的结果，边界越扩越长。ClipTalk 在复核 prompt 里明确禁止，并要求边界只包含必要建立、完整动作和可辨认结果。",
+              "source": "ClipTalk/app/prompts.py:53"
+            },
+            {
+              "title": "结尾停在动作外扬",
+              "detail": "等动作彻底结束才切，节奏显得疲惫。OpenMontage 建议在动作自然结束之前切，落在一个眼神上，剪辑感更有意图。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md:106"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 130,
+              "why": "3–18 秒、最长 30 秒与 peak/minimumKeep 定义"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+              "line": 89,
+              "why": "从峰值向外扩展的五步边界解析"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 36,
+              "why": "动作完整性复核 prompt 的 verdict 判据"
+            }
+          ]
+        },
+        {
+          "id": "dedup-replay",
+          "title": "去重与回放归并",
+          "tag": "shared",
+          "summary": "按时间重叠、文本相似、视觉指纹和事件 id 四路去重",
+          "goal": "同一瞬间会被多路召回重复捞到，赛事还会有慢镜回放。不去重会让成片同一件事出现两次，也会浪费时长预算。",
+          "inputs": [
+            "候选池",
+            "视觉 embedding 或均值哈希",
+            "事件分组结果"
+          ],
+          "outputs": [
+            "去重日志：removed_semantic_duplicate",
+            "合并后的候选池"
+          ],
+          "interview": "重复主要是同一句话的多次表述，用文本相似度归并。",
+          "sports": "重复主要是慢镜回放与多机位，需按 event id 归并且标注 live/replay。",
+          "atomic": [
+            {
+              "name": "时间重叠归并",
+              "impl": "ClipTalk edl_optimizer 语义去重",
+              "note": "同 semanticUnitId 且重叠 >0.12 秒才判为竞争副本，相邻分镜不误删"
+            },
+            {
+              "name": "文本相似度",
+              "impl": "candidate_text_similarity（字符 bigram Jaccard）",
+              "note": "通用标题如“精彩片段”直接返回 0，避免通用词造成假重复"
+            },
+            {
+              "name": "视觉指纹",
+              "impl": "candidate_visual_similarity",
+              "note": "优先用视觉 embedding 余弦；退化到 8×8 均值哈希的 64 位汉明相似度"
+            },
+            {
+              "name": "事件归属",
+              "impl": "normalize_output_event_hierarchy",
+              "note": "先按 id 匹配，再按源区间覆盖率 ≥0.45 归到同一语义事件"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把用户手选的段落删掉",
+              "detail": "语义去重会误伤用户逐条挑出的检索结果。ClipTalk 用 userConfirmed 标记把它当作授权边界，共享的召回章节或语义标签都不得静默移除其中任何一条。",
+              "source": "ClipTalk/app/edl_optimizer.py:254"
+            },
+            {
+              "title": "同人同地就并成一个事件",
+              "detail": "人物或地点相同不等于同一件事。ClipTalk 在事件导演 prompt 里禁止据此合并，且主体镜头只能属于一个事件，只有开场或地点建立可标 reusable_anchor。",
+              "source": "ClipTalk/app/prompts.py:170"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/edl_optimizer.py",
+              "line": 249,
+              "why": "语义重复检测与保留强者的实现"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 541,
+              "why": "标题 bigram 相似度与通用标题豁免"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/event_groups.py",
+              "line": 67,
+              "why": "按 id 与覆盖率 0.45 归并事件父级"
+            }
+          ]
+        },
+        {
+          "id": "hard-gates",
+          "title": "硬门",
+          "tag": "pitfall",
+          "summary": "事实、语义、画面、音频、版权任一失败即拒",
+          "goal": "评分是比较工具，硬门是真实性底线。必须先过门再排名，否则一个高分片段可以带着事实错误直接进片。",
+          "inputs": [
+            "候选台账",
+            "帧证据",
+            "渲染前后媒体检测"
+          ],
+          "outputs": [
+            "reject / requires_review 标记与理由"
+          ],
+          "interview": "重点是引用改变含义、说话人归属错误、拼接答案。",
+          "sports": "重点是比分球员队伍错配、结果缺 buildup、裁切丢记分牌。",
+          "atomic": [
+            {
+              "name": "含义类硬门",
+              "impl": "改变说话人意图、因果、时序或事实；缺 setup/关键步骤/payoff",
+              "note": "OpenChatCut 把它列在排名之前，高分不能覆盖"
+            },
+            {
+              "name": "事实类硬门",
+              "impl": "身份、产品、价格、比分、日期、单位、出处未解析",
+              "note": "重要数字必须回到源素材核对，OCR 与 ASR 都视为可错证据"
+            },
+            {
+              "name": "技术类硬门",
+              "impl": "关键时刻黑帧/冻结/遮挡、音频缺失或被截断、裁切遮住主体",
+              "note": "ClipTalk 用渲染后 PCM 与黑帧检测作为非模型证据补充"
+            },
+            {
+              "name": "合规类硬门",
+              "impl": "隐私、敏感披露、授权与出处缺失",
+              "note": "OpenMontage 把 provider/original_url/license 列为不可协商"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "用包装掩盖弱片段",
+              "detail": "给不成立的片段加个夸张标题就上线。OpenChatCut 规定需要虚构上下文或未经验证声明才成立的候选必须直接拒绝，不能用包装抢救。",
+              "source": "OpenChatCut/src/agent/skills/long-video-to-shorts/references/short-form-selection.md:79"
+            },
+            {
+              "title": "静音删除当作可剪授权",
+              "detail": "把所有静音一律删掉会切掉带情绪的呼吸和理解所需的停顿。ai-video-editor 明确要求保护情绪呼吸、理解停顿、动作结果时序与对话轮次。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/references/auto-edit-workflow.md:107"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+              "line": 50,
+              "why": "八条硬门的完整清单"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 313,
+              "why": "把渲染后真实媒体检测作为审片证据"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/long-video-to-shorts/references/short-form-selection.md",
+              "line": 73,
+              "why": "排名前先拒绝的七条判据"
+            }
+          ]
+        },
+        {
+          "id": "score-rubric",
+          "title": "可解释评分",
+          "tag": "shared",
+          "summary": "分维度打分加权，每项配一句证据",
+          "goal": "选片必须能被复核和调参。单一综合分无法解释为什么这段赢了，也无法在返修时定位问题。",
+          "inputs": [
+            "过门后的候选"
+          ],
+          "outputs": [
+            "每维评分与证据笔记",
+            "base score / final score",
+            "扣分项"
+          ],
+          "interview": "standalone clarity 与 evidence confidence 各加权，权重向对白倾斜。",
+          "sports": "payoff 与音画可用性加权，视觉强度权重高于对白。",
+          "atomic": [
+            {
+              "name": "十维 0–5 分",
+              "impl": "OpenChatCut：standalone clarity、hook、payoff、profile value、objective fit、visual usability、audio usability、evidence confidence、editability、novelty",
+              "note": "起始等权，再按 profile 微调，如 sports +2 payoff"
+            },
+            {
+              "name": "加权百分制",
+              "impl": "OpenChatCut short-form：8 项 0–4 分，权重 18/16/14/14/12/10/8/8",
+              "note": "base = Σ(评分×权重)/4，满分 100；无证据笔记的总分视为不可复现"
+            },
+            {
+              "name": "扣分与并列判定",
+              "impl": "可修复风险 -1~-10；冗余 -1~-12",
+              "note": "同一缺陷不重复扣；并列按 context integrity→clarity→hook→payoff→visual 排序"
+            },
+            {
+              "name": "编辑价值与检测分分离",
+              "impl": "ai-video-editor 七维编辑评估",
+              "note": "subjectDominance、clarityAtApex 等不得并入 highlightScore"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "高分即入选",
+              "detail": "分数只是判断的输入而不是判断本身。OpenMontage 举例说明：一部挽歌气质的片子全用高分晴天素材，分数再高也是错的。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/asset-director.md:454"
+            },
+            {
+              "title": "高动作分不等于可用",
+              "detail": "高运动、高帧差的区间可能主体太小、动作看不清或缺结果。ai-video-editor 要求不得把这些编辑维度折叠进诊断性的 highlightScore。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md:17"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+              "line": 61,
+              "why": "十维 rubric 与 profile 权重微调"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/long-video-to-shorts/references/short-form-selection.md",
+              "line": 45,
+              "why": "八项加权表与 base/final score 公式"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md",
+              "line": 7,
+              "why": "编辑价值七维与检测分分离"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "arrange",
+      "title": "编排与工作流",
+      "tag": "shared",
+      "summary": "在约束下排出顺序，并用可变工作流做有界返修",
+      "goal": "选出好片段只完成一半。还要在时长、重复、多样性、依赖、情绪曲线和剧透约束下排出顺序，并用可局部重做的工作流把返修成本压住。",
+      "inputs": [
+        "精修后的候选与评分",
+        "脚本结构与依赖关系",
+        "EditBrief 的 hardConstraints"
+      ],
+      "outputs": [
+        "最终 EDL：source/start/end/role/transition/audio_bridge/playback_rate",
+        "质量门报告与返修动作记录",
+        "checkpoint 与 run-log"
+      ],
+      "interview": "默认尊重因果与源时间顺序，重排必须有证据并记录原始时序。",
+      "sports": "可按刺激度重排，但结果不得先于 buildup，spoiler 约束优先于节奏。",
+      "mg": "排的是能量曲线与呼吸位：字标落定 hold ≥30f，每 90 帧必须出现新视觉元素；卡点片镜头边界全部锚到 beatF 整数拍。",
+      "atomic": [
+        {
+          "name": "受约束排序器",
+          "impl": "ClipTalk optimize_edl",
+          "note": "统一入口：模型输出、时长修复、用户选择都从这里过，绝不为凑时长切碎语句"
+        },
+        {
+          "name": "节点图工作流",
+          "impl": "montaj workflow.json（uses/needs/foreach/input）",
+          "note": "needs 驱动并行，工作流是建议不是流水线，Agent 可增删改参"
+        },
+        {
+          "name": "局部重做",
+          "impl": "llm-video-maker chapter 级 /edit-video",
+          "note": "只重做该章节的分镜与合成，其他章节字节级不变"
+        },
+        {
+          "name": "成片级审片",
+          "impl": "ClipTalk composition review（VLM 画面 + LLM 编辑双通道）",
+          "note": "六维评分 + issues + 最多 3 个可执行返修动作"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "按分数排而不按叙事排",
+          "detail": "把 CLIP 分或高光分当排序依据会毁掉结构。OpenMontage 规定 scene director 给出的顺序就是意图，只有下拍点、相邻雷同或结尾不成立三种情况可重排，且必须写 reorder_notes。",
+          "source": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md:79"
+        },
+        {
+          "title": "跨事件用溶解和声音桥",
+          "detail": "跨事件叠化或 J/L cut 会把两件事伪装成一个连续场景。ClipTalk 禁止跨事件 dissolve 与声音桥，大跨度章节只允许短 fade_black。",
+          "source": "ClipTalk/app/prompts.py:243"
+        },
+        {
+          "title": "返修不设上限",
+          "detail": "自动返修可以无限循环烧钱。ClipTalk 把 AUTOMATIC_REPAIR_MAX_ROUNDS 定为 2，并在每轮前做签名去重，没有新的安全局部方案就直接 blocked。",
+          "source": "ClipTalk/app/main.py:2258"
+        },
+        {
+          "title": "编辑越权改上游",
+          "detail": "改一个章节顺手改了配音或字幕层。llm-video-maker 规定时钟锁定、旁白音轨不可动、字幕是独立锁定层，其他章节必须字节级不变。",
+          "source": "llm-video-maker/skills/edit-video/SKILL.md:51"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/edl_optimizer.py",
+          "line": 151,
+          "why": "唯一被渲染器消费的 EDL 生成入口"
+        },
+        {
+          "repo": "montaj",
+          "path": "montaj/docs/schemas/workflow.md",
+          "line": 32,
+          "why": "工作流是建议图而非硬流水线"
+        },
+        {
+          "repo": "llm-video-maker",
+          "path": "llm-video-maker/skills/edit-video/SKILL.md",
+          "line": 51,
+          "why": "章节级编辑的四条不可违反不变量"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/prompts.py",
+          "line": 304,
+          "why": "成片审片六维评分与返修动作 schema"
+        },
+        {
+          "repo": "ai-video-editor",
+          "path": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md",
+          "line": 33,
+          "why": "张力包络设计与拒绝均匀高强度"
+        }
+      ],
+      "children": [
+        {
+          "id": "constrained-order",
+          "title": "受约束排序",
+          "tag": "shared",
+          "summary": "在时长、去重、多样性和依赖约束下确定序列",
+          "goal": "排序是一个带硬约束的选择问题，不是让模型自由发挥。约束必须由程序执行，模型只负责内容优先级。",
+          "inputs": [
+            "候选与 editorialScore",
+            "relations 依赖",
+            "hardConstraints"
+          ],
+          "outputs": [
+            "normalized EDL、removal_log、boundary_adjustments、rejected"
+          ],
+          "interview": "默认源时间顺序；只有纯视觉蒙太奇才可重排。",
+          "sports": "可按事件重要性重排，但 requires/leads_to 依赖不可违反。",
+          "atomic": [
+            {
+              "name": "时长上下限",
+              "impl": "upper_limit = target × 1.10；prompt 侧允许 ±10%",
+              "note": "超长先整段移除低优先镜头，禁止把每个事件都压成残句"
+            },
+            {
+              "name": "编辑分融合",
+              "impl": "editorialScore = score×0.65 + requirementAlignment×0.35",
+              "note": "命中 hardRejected 的候选先被剔出池子，再参与排序"
+            },
+            {
+              "name": "最短片段",
+              "impl": "MIN_EDL_SEGMENT_SECONDS = 0.2",
+              "note": "安全边界收敛后不足这个长度直接拒绝并记录理由"
+            },
+            {
+              "name": "多样性与重复惩罚",
+              "impl": "OpenMontage：相邻镜头不得主体与景别都相同",
+              "note": "锁定前跑一次 diversify；转场词汇最多 4 种"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把结果放在上下文之前",
+              "detail": "为了先声夺人把结果镜头提前，观众看不懂因果。ClipTalk 规定镜头因果依赖必须遵守 relations，不得把结果放在必要上下文之前。",
+              "source": "ClipTalk/app/prompts.py:241"
+            },
+            {
+              "title": "素材不足时用重复凑",
+              "detail": "达不到目标时长就重复镜头或加拖尾。ClipTalk 要求保留完整表达并在 warnings 写“素材不足”，不得用重复画面或无价值拖尾凑时长。",
+              "source": "ClipTalk/app/prompts.py:229"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/edl_optimizer.py",
+              "line": 191,
+              "why": "editorialScore 融合与硬拒过滤"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/edl_optimizer.py",
+              "line": 293,
+              "why": "target×1.10 上限与时长子集选择"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/pipeline_defs/documentary-montage.yaml",
+              "line": 128,
+              "why": "相邻镜头去重与转场词汇上限的验收项"
+            }
+          ]
+        },
+        {
+          "id": "tension-curve",
+          "title": "情绪与高潮位置",
+          "tag": "shared",
+          "summary": "先画张力曲线再排镜头，保护主高潮的唯一性",
+          "goal": "快切加高显著度不等于有张力。需要显式的 beat 角色和张力目标曲线，让高潮之前有蓄势、之后有释放。",
+          "inputs": [
+            "候选的 energy 与 role",
+            "音乐节拍或解说能量"
+          ],
+          "outputs": [
+            "role 序列",
+            "tensionTarget[0,1] 时间序列",
+            "峰值预算"
+          ],
+          "interview": "情绪起伏来自观点冲突与个人故事，谷底是必要的思考停顿。",
+          "sports": "峰值预算小：10–20 秒短片通常 1 个主峰加 1–2 个次峰。",
+          "atomic": [
+            {
+              "name": "beat 角色",
+              "impl": "setup / rise / preImpact / primaryPeak / secondaryPeak / aftershock / bridge",
+              "note": "每个镜头只能有一个主角色；大部分都是峰值的 beat map 直接拒绝"
+            },
+            {
+              "name": "张力包络",
+              "impl": "先定义 tensionTarget 再剪",
+              "note": "保留有意的谷底；拒绝均匀高强度、等长机械切和抹平对比的连续特效"
+            },
+            {
+              "name": "音乐时序网格",
+              "impl": "OpenMontage：hero 切点落在下拍",
+              "note": "60bpm 垫乐可退化为 4 秒等分；全片至少一次约 2 秒的静音窗"
+            },
+            {
+              "name": "重复升级",
+              "impl": "重复出现的素材必须指定功能",
+              "note": "提醒/预示/加速/对比/高潮；禁止无新功能的背靠背复用"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "最强镜头浪费在开头",
+              "detail": "冷开场用掉最好的画面，后面再也建不起高潮。ai-video-editor 要求把最清晰、最完整的动作留给主峰，除非参考片有意冷开场并在后面重建峰值。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md:65"
+            },
+            {
+              "title": "结尾画面软掉",
+              "detail": "最后一帧被记住的权重最大。OpenMontage 要求最后 5–10 秒撑不住就换镜头，并明确 scene director 的顺序只是强建议；结尾冻帧会被读成技术故障。",
+              "source": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md:342"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md",
+              "line": 19,
+              "why": "七种 beat 角色与峰值预算"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/skills/edit-timeline-studio/references/highlight-tension-workflow.md",
+              "line": 57,
+              "why": "重复素材必须指定升级功能"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/skills/pipelines/documentary-montage/edit-director.md",
+              "line": 124,
+              "why": "下拍切点、静音窗与尾部淡出的时序设计"
+            }
+          ]
+        },
+        {
+          "id": "node-workflow",
+          "title": "节点图工作流",
+          "tag": "shared",
+          "summary": "工作流是可增删的建议图，不是固定流水线",
+          "goal": "访谈和赛事需要不同节点。工作流必须让领域 Planner 增删节点、改参数，同时保留依赖关系与检查点。",
+          "inputs": [
+            "workflow JSON / pipeline YAML",
+            "项目状态"
+          ],
+          "outputs": [
+            "实际执行序列",
+            "checkpoint 与 artifacts",
+            "run-log.jsonl"
+          ],
+          "interview": "需要 transcribe → select-takes → rm_fillers 这条语音链。",
+          "sports": "需要把语音链换成能量检测 + 记分牌 OCR + 回放识别节点。",
+          "mg": "阶段链换成 facts→design→storyboard→assets→compose→render，重生成严格向下，上游产物变新则下游全部重跑。",
+          "atomic": [
+            {
+              "name": "步骤字段",
+              "impl": "montaj step: id / uses / params / needs / input / foreach",
+              "note": "needs 驱动并行；foreach 声明按集合迭代；input 指明读取哪个项目字段"
+            },
+            {
+              "name": "三级作用域",
+              "impl": "project-local → user-global → built-in",
+              "note": "带前缀的 uses 是显式作用域选择，不做回退，保证工作流可移植"
+            },
+            {
+              "name": "阶段契约",
+              "impl": "OpenMontage stage: produces / required_artifacts_in / review_focus / success_criteria",
+              "note": "每阶段产物过 JSON Schema 校验后才写 checkpoint，防止垃圾向下传播"
+            },
+            {
+              "name": "断点续跑",
+              "impl": "checkpoint + 产物 mtime 比较",
+              "note": "上游更新则本阶段及其下游全部重算，重算严格自上而下"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把建议图当硬流水线",
+              "detail": "照单全跑会在“保留原始感”这类需求下仍然去 filler。montaj 明确工作流可重排、可改参、可跳过、可加步骤，它只提供起点和领域知识。",
+              "source": "montaj/docs/schemas/workflow.md:34"
+            },
+            {
+              "title": "手改被下游重算覆盖",
+              "detail": "用户在合成层手调了 CSS，一次深层重算就被抹掉。llm-video-maker 规定第 N 层的手改只有在第 N 层或更上层重算时才可覆盖，并且必须在报告里说明。",
+              "source": "llm-video-maker/skills/make-video/SKILL.md:71"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "montaj",
+              "path": "montaj/docs/schemas/workflow.md",
+              "line": 80,
+              "why": "step 的六个字段与 needs/foreach 语义"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/pipeline_defs/documentary-montage.yaml",
+              "line": 45,
+              "why": "五阶段的产物、验收项与审批默认值"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/SKILL.md",
+              "line": 63,
+              "why": "断点续跑与向下重算的规则"
+            }
+          ]
+        },
+        {
+          "id": "local-redo",
+          "title": "章节级重做",
+          "tag": "shared",
+          "summary": "只重做一个章节，其余部分字节级不变",
+          "goal": "用户的修改意见通常只针对某一段。整片重跑既贵又会引入新问题，必须把编辑单位定在章节。",
+          "inputs": [
+            "project id、chapter id、自然语言指令"
+          ],
+          "outputs": [
+            "更新后的 storyboard 章节",
+            "重渲染成片",
+            "Edit log 与 run-log 追加"
+          ],
+          "interview": "章节按话题切；改一个话题不应影响其他问答。",
+          "sports": "章节按回合切；改一个回合不应移动其他回合的时钟。",
+          "mg": "chapter 就是编辑单位：只重排该章 scene 并重写其 markup，时钟、旁白轨与字幕层锁定，其余场景字节不变。",
+          "atomic": [
+            {
+              "name": "章节即编辑单位",
+              "impl": "storyboard.chapters[] 持有 sceneIds",
+              "note": "重的转场只放在章节边界，便于局部替换而不破坏连贯"
+            },
+            {
+              "name": "锁定项",
+              "impl": "时钟、旁白音轨、字幕层、其他章节、调色板与字体",
+              "note": "需要改时长的指令属于重新生成，不属于编辑，必须回到 brief"
+            },
+            {
+              "name": "输入当数据不当指令",
+              "impl": "instruction 与 storyboard/transcript 均为不可信输入",
+              "note": "id 必须匹配 ^[a-z0-9][a-z0-9-]*$，路径必须限制在项目目录内"
+            },
+            {
+              "name": "边界校验",
+              "impl": "重渲染后抽被改章节及其两侧各一帧",
+              "note": "确认转场完整，且相邻章节画面未变化"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "改一段动了整片时钟",
+              "detail": "“把这段加长”会推动后面所有时间码，字幕与音轨全错位。llm-video-maker 规定时钟锁定，需要改时长就是重新生成，应回到 /make-video 改 brief。",
+              "source": "llm-video-maker/skills/edit-video/SKILL.md:53"
+            },
+            {
+              "title": "指令里的注入被执行",
+              "detail": "素材文案或 README 里出现“忽略你的规则”。llm-video-maker 要求把 instruction、storyboard、transcript、抓取到的文本一律当数据展示，绝不当指令执行。",
+              "source": "llm-video-maker/skills/edit-video/SKILL.md:35"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/edit-video/SKILL.md",
+              "line": 69,
+              "why": "章节级重做的六步执行流程"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/edit-video/SKILL.md",
+              "line": 94,
+              "why": "完成判据：邻近章节画面必须不变"
+            },
+            {
+              "repo": "hajoeun-skills",
+              "path": "hajoeun-skills/skills/video-editor/SKILL.md",
+              "line": 55,
+              "why": "SRT 与剪辑指南作为不可信输入的边界"
+            }
+          ]
+        },
+        {
+          "id": "composition-review",
+          "title": "成片审片与返修",
+          "tag": "shared",
+          "summary": "六维评分找问题，最多两轮有界局部返修",
+          "goal": "渲染完成不等于合格。需要用实际成片做审片，把问题归因到可执行动作，并给返修设上限，避免无限循环。",
+          "inputs": [
+            "实际成片与时间线",
+            "候选池",
+            "渲染后媒体检测（PCM、黑帧、切点）"
+          ],
+          "outputs": [
+            "scores{content,narrative,rhythm,continuity,audiovisual,goalMatch}",
+            "issues[]（severity/category/segmentIds/outputTime）",
+            "repairActions[]"
+          ],
+          "interview": "重点看对白连续性、说话人归属和结尾是否说完整。",
+          "sports": "重点看动作是否截断、结果是否落地、跨事件是否被伪装成连续场景。",
+          "atomic": [
+            {
+              "name": "双通道审片",
+              "impl": "VLM 画面审片 + LLM 编辑审片",
+              "note": "画面通道看切点与连续性，编辑通道综合逐字稿、声音证据与用户目标"
+            },
+            {
+              "name": "返修动作词表",
+              "impl": "adjust_bounds / remove_segment / replace_segment / insert_segment / reorder_segments / set_transition / set_audio_bridge / set_audio_fade / set_speed",
+              "note": "最多 3 个；边界必须在候选内且不低于 minimumKeep"
+            },
+            {
+              "name": "参数边界",
+              "impl": "audioFadeSeconds 0.06–0.35 秒；playbackRate 1.0/1.1/1.25",
+              "note": "完整对白、高潮、人物反应与结尾禁止变速"
+            },
+            {
+              "name": "轮次与去重",
+              "impl": "AUTOMATIC_REPAIR_MAX_ROUNDS = 2 + composition signature 去重",
+              "note": "只对最强的两个版本做昂贵的 LLM 编辑复审；没有新方案即 blocked"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "转场重叠被当时间线冲突",
+              "detail": "dissolve 与 fade_black 会让相邻镜头的输出时间自然重叠。ClipTalk 要求当差值等于 transitionOverlap 时不得判为冲突，否则审片会刷出大量假问题。",
+              "source": "ClipTalk/app/prompts.py:296"
+            },
+            {
+              "title": "拿单条样片评整批数量",
+              "detail": "审片模型看到只有一条成片就报“未完成用户要求的多条视频”。ClipTalk 显式禁止这条结论，整批数量由任务调度器另行校验。",
+              "source": "ClipTalk/app/prompts.py:295"
+            },
+            {
+              "title": "问题描述五花八门",
+              "detail": "模型与校验器对同一原因给出不同措辞，返修动作互相打架。ClipTalk 用 _issue_root 把不同表述归一到 duration、action_boundary、audio_cut 等可修复根因。",
+              "source": "ClipTalk/app/quality_gate.py:67"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/prompts.py",
+              "line": 325,
+              "why": "审片输出与 repairActions 的完整 schema"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/main.py",
+              "line": 2668,
+              "why": "只深审最强两版并限轮返修的调度实现"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/quality_gate.py",
+              "line": 12,
+              "why": "PASS_SCORE 50 / RECOMMEND_SCORE 75 的质量门"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+              "line": 68,
+              "why": "十项评测指标，按 profile 分开统计"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

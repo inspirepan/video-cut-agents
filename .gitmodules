@@ -1,0 +1,152 @@
+[submodule "agent-skills"]
+	path = agent-skills
+	url = https://github.com/blitzreels/agent-skills
+	branch = main
+[submodule "ai-video-editing-skill"]
+	path = ai-video-editing-skill
+	url = https://github.com/znyupup/ai-video-editing-skill
+	branch = main
+[submodule "ai-video-editor"]
+	path = ai-video-editor
+	url = https://github.com/MartinDelophy/ai-video-editor
+	branch = main
+[submodule "baocut"]
+	path = baocut
+	url = https://github.com/jimliu/baocut
+	branch = main
+[submodule "chatmonteur"]
+	path = chatmonteur
+	url = https://github.com/ArtCog/chatmonteur
+	branch = main
+[submodule "claude-code-plugin"]
+	path = claude-code-plugin
+	url = https://github.com/remotion-dev/claude-code-plugin
+	branch = main
+[submodule "claude-code-video-toolkit"]
+	path = claude-code-video-toolkit
+	url = https://github.com/digitalsamba/claude-code-video-toolkit
+	branch = main
+[submodule "claude-remotion-skill"]
+	path = claude-remotion-skill
+	url = https://github.com/haidrrrry/claude-remotion-skill
+	branch = main
+[submodule "ClipTalk"]
+	path = ClipTalk
+	url = https://github.com/GML-MMGroup/ClipTalk
+	branch = main
+[submodule "clueso-ai-skills"]
+	path = clueso-ai-skills
+	url = https://github.com/clueso-ai/skills
+	branch = main
+[submodule "codex-chatcut"]
+	path = codex-chatcut
+	url = https://github.com/francize/codex-chatcut
+	branch = main
+[submodule "codex-plugin"]
+	path = codex-plugin
+	url = https://github.com/remotion-dev/codex-plugin
+	branch = main
+[submodule "editor"]
+	path = editor
+	url = https://github.com/diffusionstudio/editor
+	branch = main
+[submodule "FireRed-OpenStoryline"]
+	path = FireRed-OpenStoryline
+	url = https://github.com/FireRedTeam/FireRed-OpenStoryline
+	branch = main
+[submodule "framecraft"]
+	path = framecraft
+	url = https://github.com/vaddisrinivas/framecraft
+	branch = master
+[submodule "frontstage"]
+	path = frontstage
+	url = https://github.com/x777/frontstage
+	branch = main
+[submodule "hajoeun-skills"]
+	path = hajoeun-skills
+	url = https://github.com/hajoeun/skills
+	branch = main
+[submodule "hyperframes"]
+	path = hyperframes
+	url = https://github.com/heygen-com/hyperframes
+	branch = main
+[submodule "kajisho5-ffmpeg-skill"]
+	path = kajisho5-ffmpeg-skill
+	url = https://github.com/kajisho5/ffmpeg-skill
+	branch = main
+[submodule "llm-video-maker"]
+	path = llm-video-maker
+	url = https://github.com/GoldLegendW80/llm-video-maker
+	branch = main
+[submodule "montaj"]
+	path = montaj
+	url = https://github.com/theSamPadilla/montaj
+	branch = main
+[submodule "n0an-ffmpeg-skill"]
+	path = n0an-ffmpeg-skill
+	url = https://github.com/n0an/ffmpeg-skill
+	branch = main
+[submodule "open-edit"]
+	path = open-edit
+	url = https://github.com/veedstudio/open-edit
+	branch = main
+[submodule "OpenChatCut"]
+	path = OpenChatCut
+	url = https://github.com/0xsline/OpenChatCut
+	branch = main
+[submodule "OpenMontage"]
+	path = OpenMontage
+	url = https://github.com/calesthio/OpenMontage
+	branch = main
+[submodule "palmier-pro"]
+	path = palmier-pro
+	url = https://github.com/palmier-io/palmier-pro
+	branch = main
+[submodule "pireel"]
+	path = pireel
+	url = https://github.com/pireel/pireel
+	branch = main
+[submodule "premiere-agent"]
+	path = premiere-agent
+	url = https://github.com/Kemerd/premiere-agent
+	branch = main
+[submodule "remotion-dev-skills"]
+	path = remotion-dev-skills
+	url = https://github.com/remotion-dev/skills
+	branch = main
+[submodule "remotion"]
+	path = remotion
+	url = https://github.com/remotion-dev/remotion
+	branch = main
+[submodule "Ultimate-Video-Editing-Skills"]
+	path = Ultimate-Video-Editing-Skills
+	url = https://github.com/Rajbharti06/Ultimate-Video-Editing-Skills
+	branch = main
+[submodule "video-agent-skills"]
+	path = video-agent-skills
+	url = https://github.com/chenhuajinchj/video-agent-skills
+	branch = main
+[submodule "video-edit-cli"]
+	path = video-edit-cli
+	url = https://github.com/computerlovetech/video-edit-cli
+	branch = main
+[submodule "video-edit-tools"]
+	path = video-edit-tools
+	url = https://github.com/swimmingkiim/video-edit-tools
+	branch = main
+[submodule "video-editing-skill"]
+	path = video-editing-skill
+	url = https://github.com/6missedcalls/video-editing-skill
+	branch = main
+[submodule "video-shotcraft"]
+	path = video-shotcraft
+	url = https://github.com/Vincentwei1021/video-shotcraft
+	branch = main
+[submodule "video-use"]
+	path = video-use
+	url = https://github.com/browser-use/video-use
+	branch = main
+[submodule "anything2explainer"]
+	path = anything2explainer
+	url = https://github.com/Vincentwei1021/anything2explainer
+	branch = main

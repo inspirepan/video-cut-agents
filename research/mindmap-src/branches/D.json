@@ -1,0 +1,2402 @@
+{
+  "branches": [
+    {
+      "id": "timeline-ir",
+      "title": "Timeline IR 与写入协议",
+      "tag": "shared",
+      "summary": "定义工程真相（唯一事实来源），规定 Agent 只能按协议写入并可回滚",
+      "goal": "让人和 Agent 修改同一份工程数据，而不是各自维护一套会逐渐不一致的数据模型。每次写入都必须可校验、可回滚、可追溯。",
+      "inputs": [
+        "LLM 脚本与选片决策",
+        "素材 manifest 与 probe 结果",
+        "词级转写 JSON"
+      ],
+      "outputs": [
+        "ProjectDoc / .timeline / .bcut",
+        "operation 计划与 diff",
+        "undo 节点与变更日志"
+      ],
+      "interview": "词级转写必须挂在 clip 上，删掉一个词就会改变片段时长。翻译与纠错放在 variant（内容变体）里，不改变时间。",
+      "sports": "每个片段都带事件章节 id。同一章节的片段保持连续，跨章节禁止用溶解（两镜头渐变叠加的过渡）来伪装时空连续。",
+      "mg": "工程真相是代码不是 clip 表：Remotion 用 React 组合，HyperFrames 用带 data-* 的 HTML，时间线由源码派生。",
+      "atomic": [
+        {
+          "name": "ProjectDoc 建模",
+          "impl": "OpenChatCut ProjectDoc + Timeline[]",
+          "note": "assets 池全局共享，timelines 有序，activeTimelineId 指向当前序列"
+        },
+        {
+          "name": "命令注册表",
+          "impl": "ai-video-editor projectCommandEngine reducers",
+          "note": "一个 operation type 一个纯函数 reducer，CLI 与 MCP 共用同一份"
+        },
+        {
+          "name": "revision 乐观锁",
+          "impl": "baseRevision + REVISION_CONFLICT",
+          "note": "计划带 baseRevision，与当前 revision 不等直接拒绝，不做合并"
+        },
+        {
+          "name": "草稿会话",
+          "impl": "begin_edit_session / review_edit_session",
+          "note": "改动只进入隔离草稿，经 manual 或 auto 审批，应用时整批合成一个 undo 节点"
+        },
+        {
+          "name": "别名解析",
+          "impl": "resolveTrackId(state, ref, kind)",
+          "note": "接受稳定 id 或人类别名 V1/A1/C1，避免 Agent 猜轨道"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "两套工程格式逐渐不一致",
+          "detail": "外部 Agent 如果自建一套时间线数据模型，就会与编辑器内核逐渐不一致。对策：MCP 只做 CLI 命令注册表的传输层，界面最终也派发同一批命令。",
+          "source": "ai-video-editor/skills/edit-timeline-studio/references/command-contract.md:81"
+        },
+        {
+          "title": "传输校验不等于语义校验",
+          "detail": "validate_edit_plan.mjs 只检查 schema 的形状，不支持的 operation 仍会在 apply 时报错。对策：再跑一次 project.diff，用与正式执行相同的 reducer 预演，检查工程层面的语义。",
+          "source": "ai-video-editor/skills/edit-timeline-studio/references/command-contract.md:30"
+        },
+        {
+          "title": "V1 不是最上面的轨",
+          "detail": "视频轨别名自下而上编号。如果 Agent 把 V1 当成顶层来放叠加图层，画面会被下面的片段盖住。对策：先读 trackOrder，再用 resolveTrackId 解析。",
+          "source": "OpenChatCut/src/agent/tools/schemas/read-project-tools.ts:12"
+        },
+        {
+          "title": "重复 operation id 执行两次",
+          "detail": "重试或重放计划时，同一个 operation id 会被再次执行，片段数量翻倍。对策：applyCommandPlan 记录 appliedOperationIds，命中已执行的 id 就跳过并返回原结果。",
+          "source": "ai-video-editor/src/lib/projectCommandEngine.js:665"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/editor/projectTypes.ts",
+          "line": 8,
+          "why": "ProjectDoc 的完整字段定义"
+        },
+        {
+          "repo": "ai-video-editor",
+          "path": "ai-video-editor/skills/edit-timeline-studio/references/command-contract.md",
+          "line": 5,
+          "why": "计划信封与只读/写操作清单"
+        },
+        {
+          "repo": "ai-video-editor",
+          "path": "ai-video-editor/src/lib/projectCommandEngine.js",
+          "line": 661,
+          "why": "revision 检查与幂等应用的实现"
+        },
+        {
+          "repo": "frontstage",
+          "path": "frontstage/packages/core/src/schema/schemas.ts",
+          "line": 191,
+          "why": "另一套 zod 化的 Clip/Track/Timeline schema"
+        }
+      ],
+      "children": [
+        {
+          "id": "ir-projectdoc",
+          "title": "ProjectDoc 与轨道模型",
+          "tag": "shared",
+          "summary": "素材池加多条时间线，clip 只记录素材 id 与原片起止区间",
+          "goal": "把工程数据收敛成一份可序列化的文档。clip 不复制媒体文件，只记录对源素材的引用和使用区间，素材被删除时片段信息也不丢失。",
+          "inputs": [
+            "素材导入结果",
+            "选片区间"
+          ],
+          "outputs": [
+            "ProjectDoc JSON"
+          ],
+          "mg": "ProjectDoc 需带 designStyle（colors/fonts/styleGuide）：它就是品牌本身，决定生成的图形与字幕用什么颜色和字体。",
+          "atomic": [
+            {
+              "name": "项目文档",
+              "impl": "ProjectDoc{version, assets, mediaFolders, timelines, activeTimelineId, designStyle}",
+              "note": "version 让持久化迁移显式；designStyle 是全局品牌样式"
+            },
+            {
+              "name": "时间线状态",
+              "impl": "TimelineState{fps,width,height,fit,items,trackOrder,tracks,transitions,markers,linkGroups,multicamGroups}",
+              "note": "Timeline = TimelineState + id/name/order/hidden"
+            },
+            {
+              "name": "clip 源窗口",
+              "impl": "TimelineItem{startFrame,durationInFrames,srcInFrame,playbackRate,sourceAssetId,sourceRevision,sourceContentHash}",
+              "note": "变速时保留源片段的使用跨度，durationInFrames 按 1/rate 缩放"
+            },
+            {
+              "name": "轨道元数据",
+              "impl": "TrackFlags{kind,name,hidden,muted,locked,collapsed,role,audioRouting.duckDepthDb}",
+              "note": "role=anchor 的人声一出现，就自动压低 follower 音乐的音量（闪避）"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "只存一种时间区间",
+              "detail": "如果片段只记录在时间线上的位置、不记录在原片里的区间（源窗口），变速或裁剪后就无法回溯到原片时间。对策：FireRed 每段同时写 source_window 与 timeline_window。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/plan_timeline.py:181"
+            },
+            {
+              "title": "用 src 路径当素材身份",
+              "detail": "重复导入或重新链接后，可能出现 src 路径相同但内容不同的资产，替换时会换错素材。对策：用 sourceAssetId 加 sourceContentHash 的 SHA-256 做规范化去重。",
+              "source": "OpenChatCut/src/editor/mediaContentIdentity.ts:8"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/timelineTypes.ts",
+              "line": 68,
+              "why": "Timeline 继承 TimelineState 的身份设计"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/clipTypes.ts",
+              "line": 170,
+              "why": "srcInFrame 等源窗口字段"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/trackTypes.ts",
+              "line": 7,
+              "why": "TRACK_ORDER 与 TrackFlags 定义"
+            },
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/node_schema.py",
+              "line": 41,
+              "why": "SourceRef 的最小源引用结构"
+            }
+          ]
+        },
+        {
+          "id": "ir-time-domains",
+          "title": "三类时间域",
+          "tag": "shared",
+          "summary": "源片时间、剪辑后的时间线、最终输出时间必须分开表达",
+          "goal": "避免 Agent 用一种时钟去推算另一种。所有跨时间域的换算都由工具给出映射值，不让模型自己手算。",
+          "inputs": [
+            "源片时长",
+            "cut 列表",
+            "渲染 manifest"
+          ],
+          "outputs": [
+            "output→source 映射 manifest",
+            "词到时间线的帧号"
+          ],
+          "interview": "还有第四个时钟：词与词之间的间隙（gap）。edit_gap 按 next.start − prev.end 计算；删掉间隙后，后面的音频会整体前移。",
+          "sports": "事件章节在输出时间上必须连续。跨章节的边界要能反查回各自的源时间与比分。",
+          "atomic": [
+            {
+              "name": "三时钟分离",
+              "impl": "baocut cut / clip / element 三层",
+              "note": "cut 用源片时间，clip --in/--out 用剪辑后的时间线，overlay 用 OUTPUT 时间"
+            },
+            {
+              "name": "输出到源映射",
+              "impl": "video-edit-cli render 写 <output>.manifest.json",
+              "note": "驱动 cuts list、cut inspect 与 subtitles create"
+            },
+            {
+              "name": "词到时间线映射",
+              "impl": "frontstage clipTimelineWords(clip, trackIndex, transcript, fps)",
+              "note": "窗口外的词直接丢弃，越界的词截断（clamp）到 clipEndFrame"
+            },
+            {
+              "name": "微秒换算",
+              "impl": "f2us(f)=round(f*1e6/FPS)",
+              "note": "剪映草稿的时间单位是微秒，帧与微秒换算要统一入口"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "字幕在拼接后整体偏移",
+              "detail": "如果用源片时间写 SRT，分段拼接后每段字幕都会错位。对策：按 output_time = word.start − segment_start + segment_offset 换算。",
+              "source": "video-use/SKILL.md:26"
+            },
+            {
+              "title": "自己推导另一个时钟",
+              "detail": "手工换算源片时间到输出时间容易累积误差。对策：只从 cut list、clip list、source list 读取映射值和 id。",
+              "source": "baocut/skills/baocut/references/editing.md:14"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "baocut",
+              "path": "baocut/skills/baocut/references/editing.md",
+              "line": 5,
+              "why": "cut/clip/element 三种时间域的分工"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/concepts.md",
+              "line": 121,
+              "why": "渲染 manifest 把输出切点映射回源时间"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/core/src/media/timeline-words.ts",
+              "line": 47,
+              "why": "词到项目帧的映射与 clamp 规则"
+            }
+          ]
+        },
+        {
+          "id": "ir-command-protocol",
+          "title": "命令层协议",
+          "tag": "atomic",
+          "summary": "先 inspect 再 diff 最后 apply，每步带 revision、operation id 与前置条件",
+          "goal": "让每次写入都能先预演再真正落盘。失败时不留下做了一半的状态，重放也不会重复执行。",
+          "inputs": [
+            "project.inspect 结果",
+            "Agent 写的 plan.json"
+          ],
+          "outputs": [
+            "diff 报告",
+            "新 revision 与 appliedOperationIds"
+          ],
+          "atomic": [
+            {
+              "name": "计划信封",
+              "impl": "{schemaVersion:1, project, baseRevision, dryRun, operations[{id,type,...}], output.project}",
+              "note": "时间一律用有限的秒数表示，id 在读写之间保持稳定"
+            },
+            {
+              "name": "只读命令",
+              "impl": "project.inspect / track.inspect / clip.inspect / transcript.inspect / project.diff",
+              "note": "diff 返回预测的状态变化、时长变化与告警，不写归档"
+            },
+            {
+              "name": "写操作命名",
+              "impl": "visual.trim / visual.split / clip.set_speed / caption.link_audio / transition.set",
+              "note": "强制 type 符合 namespace.action 格式，不允许自创命令名"
+            },
+            {
+              "name": "结果信封",
+              "impl": "{ok, revision, appliedOperationIds, warnings, artifacts}",
+              "note": "失败返回 code、message、failing operationId，不残留部分完成的状态"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把渲染塞进写计划",
+              "detail": "在 operations 里写 output.render，或声称 project.run 会直接产出成片，都是错的。对策：render 是独立的、带版本的 project.render 请求，只覆盖可移植子集。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:62"
+            },
+            {
+              "title": "用 --if-present 探能力",
+              "detail": "npm run ... --if-present 在脚本不存在时也会静默成功，Agent 会误以为这个能力可用。对策：读 package.json 或工具的 contract 做显式探测。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:17"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/skills/edit-timeline-studio/scripts/validate_edit_plan.mjs",
+              "line": 23,
+              "why": "计划传输层校验的具体规则"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/scripts/timeline-command.mjs",
+              "line": 141,
+              "why": "支持的 7 个命令名清单"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/src/lib/projectCommandEngine.js",
+              "line": 636,
+              "why": "diffProjects 的字段级 diff 结构"
+            }
+          ]
+        },
+        {
+          "id": "ir-edit-session",
+          "title": "草稿会话与审批",
+          "tag": "shared",
+          "summary": "外部 Agent 的改动先进隔离草稿，审批后原子提交",
+          "goal": "让外部 Agent 能修改真实工程，又不污染正式时间线。审批被拒绝时可以整体丢弃草稿，不需要逐条回滚。",
+          "inputs": [
+            "editSessionId",
+            "工具调用序列"
+          ],
+          "outputs": [
+            "草稿提案",
+            "applied / rejected / discarded 状态"
+          ],
+          "atomic": [
+            {
+              "name": "会话生命周期",
+              "impl": "begin_edit_session(approvalMode: manual|auto) → 工具带 id → review_edit_session → get_edit_session",
+              "note": "manual 模式在编辑器里勾选后应用，auto 模式立即整批应用"
+            },
+            {
+              "name": "提案结构",
+              "impl": "Proposal{title,summary,totalImpact,options[],baseDoc,resultState}",
+              "note": "baseDoc 是 propose 时的工程快照，resultState 供播放器内预览"
+            },
+            {
+              "name": "陈旧检测",
+              "impl": "revisionOf(doc) 比对 baseDoc",
+              "note": "apply 时如果工程已被改动就判为 stale（已过期），必须重读后重建提案"
+            },
+            {
+              "name": "变更日志",
+              "impl": "AgentChangeSession{summary,operations,beforeDoc,afterRevision,rollbackable}",
+              "note": "最多保留 20 个会话，超出丢最早的"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "auto 会话过期不降级",
+              "detail": "auto 模式的会话过期后直接返回错误，不会自动退回人工审批。对策：丢弃后重新 begin_edit_session，不要在原会话上重试。",
+              "source": "OpenChatCut/README_ZH.md:344"
+            },
+            {
+              "title": "副作用工具进了会话",
+              "detail": "生成、导出、删除工程这类操作一旦执行，就无法随提案被拒绝而回滚。对策：会话只暴露可以安全进草稿的读取与编辑工具。",
+              "source": "OpenChatCut/README_ZH.md:345"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/external-edit-session.ts",
+              "line": 18,
+              "why": "manual/auto 审批模式的类型与默认值"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/proposal.ts",
+              "line": 34,
+              "why": "Proposal 与 baseDoc/resultState 的契约"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/changeLog.ts",
+              "line": 14,
+              "why": "AgentChangeSession 决策日志结构"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/edit_sessions_api.py",
+              "line": 9,
+              "why": "另一套会话路由：proposals apply/cancel、undo/redo"
+            }
+          ]
+        },
+        {
+          "id": "ir-decision-fields",
+          "title": "决策字段与证据",
+          "tag": "shared",
+          "summary": "每段带 reason、置信度、替补与来源，供审片和回溯",
+          "goal": "让审片人不用重看素材就能判断每个剪切点选得对不对。决策理由是 IR 的一部分，不是只写在聊天里的说明。",
+          "inputs": [
+            "候选评分",
+            "转写引语",
+            "视觉证据"
+          ],
+          "outputs": [
+            "带 reason 的 EDL（剪辑决策清单）",
+            "决策与替补记录"
+          ],
+          "interview": "reason 要写清楚选用了哪条 take（同一段的多次录制之一）、为什么放弃另一条，例如口误位置、false start（说错重来）的时间点。",
+          "sports": "reason 要带事件 id、比分与是否回放，避免把回放当直播剪进正片。",
+          "atomic": [
+            {
+              "name": "EDL 理由",
+              "impl": "video-use edl.json ranges[].reason + beat + quote",
+              "note": "beat 标叙事作用，quote 是原话，reason 说明为什么选这条"
+            },
+            {
+              "name": "强制 reason",
+              "impl": "video-edit-cli plan validate",
+              "note": "每个 clip 必须有 reason，否则计划不通过"
+            },
+            {
+              "name": "不确定性与核验态",
+              "impl": "ClipTalk segment.uncertainty.requiresDynamicReview + verificationState.status",
+              "note": "状态不是 verified 或 not_required 就算 unresolved，阻止进入渲染"
+            },
+            {
+              "name": "尝试记录",
+              "impl": "montaj clip.generation.eval + generation.attempts[]",
+              "note": "每次尝试保留 ts、prompt、src 与评分，旧文件不覆盖"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "理由只写在聊天里",
+              "detail": "聊天记录不会进入工程文件，换个会话就丢了。对策：把 reason 写进 plan 的每个 clip，由校验器强制检查。",
+              "source": "video-edit-cli/docs/concepts.md:119"
+            },
+            {
+              "title": "改一版就覆盖旧结果",
+              "detail": "重新生成后覆盖了原文件，就无法回退到可能更好的旧版本。对策：用版本化文件名（如 scene-1-v2.mp4），attempts 里保留旧 src 与判定。",
+              "source": "montaj/skills/eval-scenes/SKILL.md:127"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 276,
+              "why": "EDL 里 beat/quote/reason 的实际写法"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/concepts.md",
+              "line": 111,
+              "why": "plan validate 的四条硬规则"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/quality_gate.py",
+              "line": 282,
+              "why": "uncertainty 与 verificationState 的判定逻辑"
+            }
+          ]
+        },
+        {
+          "id": "ir-code-composition",
+          "title": "代码型 composition",
+          "tag": "decision",
+          "summary": "Remotion/HyperFrames 的产物作为一种 clip 类型接入，不是工程真相",
+          "goal": "让代码合成能力可用，又不取代时间线本身。代码渲染成媒体文件后回到时间线，人仍然能在 NLE（非线性剪辑软件）里继续修改。",
+          "inputs": [
+            "动画需求说明（brief）",
+            "主题与品牌参数"
+          ],
+          "outputs": [
+            "slot 渲染产物 mp4/webm",
+            "motion-graphic clip"
+          ],
+          "mg": "这里主客相反：代码 composition 才是工程真相，mp4 只是派生物。要回到时间线继续编辑，需要导出剪映草稿或打开 workbench 多轨。",
+          "atomic": [
+            {
+              "name": "MG clip 类型",
+              "impl": "TimelineItem.kind='motion-graphic' + templateId/code/props/width/height",
+              "note": "MG 即 Motion Graphics（图形动画）。width/height 是模板设计的自然画框，随画布缩放"
+            },
+            {
+              "name": "嵌套序列",
+              "impl": "kind='sequence' + timelineId + sourceStartFrame/sourceDurationInFrames/playbackRate",
+              "note": "引用子时间线而不复制，拒绝缺失与循环引用"
+            },
+            {
+              "name": "槽位隔离",
+              "impl": "edit/animations/slot_<id>/",
+              "note": "每个动画一个独立目录，渲染完成后把 EDL 里 overlay 的 file 指向真实产物路径"
+            },
+            {
+              "name": "元素身份",
+              "impl": "Diffusion Studio 每个元素带 id",
+              "note": "画布拖动或时间线裁剪产生的改动，按 id 写回到创建它的元素上"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把 JSX 当工程真相",
+              "detail": "如果只保留代码，人在界面里的改动就没有地方保存。对策：每个元素带稳定 id，界面改动作为 prop 写回源文件，渲染挂载后的产物仍然是可以直接编辑的节点。",
+              "source": "editor/README.md:138"
+            },
+            {
+              "title": "动画从中段开始播",
+              "detail": "叠加层不重置 PTS（播放时间戳）时，overlay 窗口里看到的是动画中段。对策：用 setpts=PTS-STARTPTS+T/TB 把 overlay 的第 0 帧移到窗口起点。",
+              "source": "video-use/SKILL.md:25"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/clipTypes.ts",
+              "line": 142,
+              "why": "clip kind 枚举含 motion-graphic 与 sequence"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/timeline-tools.ts",
+              "line": 25,
+              "why": "嵌套序列插入的源窗口参数"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 210,
+              "why": "HyperFrames 槽位从 init 到 render 的完整命令"
+            },
+            {
+              "repo": "editor",
+              "path": "editor/README.md",
+              "line": 136,
+              "why": "代码合成与画布双向写回的 id 机制"
+            }
+          ]
+        },
+        {
+          "id": "ir-serialize-archive",
+          "title": "序列化、迁移与归档",
+          "tag": "shared",
+          "summary": "工程带版本持久化、可迁移，还能打包成便携工程文件",
+          "goal": "让工程在版本升级和跨机器搬运后仍能打开。破坏性批量操作前先留一个可回退的快照。",
+          "inputs": [
+            "内存中的 ProjectDoc"
+          ],
+          "outputs": [
+            "project.json / .timeline / .bcut",
+            "命名版本快照"
+          ],
+          "atomic": [
+            {
+              "name": "版本迁移",
+              "impl": "CURRENT_SCHEMA_VERSION=2 + MIGRATIONS[fromVersion]",
+              "note": "按来源版本逐级迁移，缺迁移函数直接抛错而不是猜"
+            },
+            {
+              "name": "分文件持久化",
+              "impl": "project.json / media.json / generation-log.json",
+              "note": "media.json 解析失败时降级为空数据并标记 manifestUnreadable，不覆盖磁盘上的原文件"
+            },
+            {
+              "name": "便携归档",
+              "impl": ".timeline 归档 / .bcut 项目 / 剪映草稿包",
+              "note": "做破坏性批量操作前，先保存版本或导出归档"
+            },
+            {
+              "name": "命名版本",
+              "impl": "manage_versions list|save|restore|delete",
+              "note": "restore 第一次返回 needsConfirm，带 confirm:true 才整体替换工程"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "0 字节文件当成缺失",
+              "detail": "写入中断产生的空文件如果被当成“清单不存在”，就会静默丢素材。对策：用 !== undefined 区分“没有文件”和“文件被截断”，截断时保留磁盘上的原文件。",
+              "source": "frontstage/packages/core/src/schema/serialize.ts:47"
+            },
+            {
+              "title": "剪映草稿是单向转换",
+              "detail": "剪映打开明文草稿后会加密保存，之后无法读回再改。对策：要修改就改导出脚本并重新做幂等安装，不要尝试解析改过的草稿。",
+              "source": "video-shotcraft/references/jianying-export.md:13"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/core/src/schema/migrations.ts",
+              "line": 1,
+              "why": "按版本键入的迁移框架"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/core/src/schema/serialize.ts",
+              "line": 26,
+              "why": "三文件编解码与降级策略"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/skills/edit-timeline-studio/SKILL.md",
+              "line": 57,
+              "why": "破坏性批量前先存版本或导出 .timeline"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/version-tools.ts",
+              "line": 4,
+              "why": "命名版本的四个动作与确认流程"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "render",
+      "title": "合成与编译后端",
+      "tag": "shared",
+      "summary": "把 IR 编译成具体渲染作业，后端可替换并显式降级",
+      "goal": "IR 只描述意图，渲染细节交给可替换的后端。后端能力不足时要显式拒绝或降级，不能静默地用近似效果代替。",
+      "inputs": [
+        "ProjectDoc / EDL（剪辑决策清单）",
+        "素材文件与 BGM",
+        "字幕 SRT"
+      ],
+      "outputs": [
+        "成片 mp4/webm",
+        "NLE（剪辑软件）工程 fcpxml/xml/剪映草稿",
+        "渲染 manifest 与中间文件"
+      ],
+      "interview": "以语音为骨架：先确定音频拼接和响度，再让画面与字幕对齐语音，顺序不能反过来。",
+      "sports": "同一事件的片段优先连续抽取；跨事件用硬切（直接切换无过渡），不要为了流畅加溶解（渐变过渡）。",
+      "mg": "渲染是主链不是收尾：画面全部由浏览器逐帧合成，FFmpeg 只做编码与混音，没有素材抽取与无损拼接这条路。",
+      "atomic": [
+        {
+          "name": "分段抽取",
+          "impl": "ffmpeg -ss 在 -i 前 + -t 时长",
+          "note": "每段各自做调色（grade）和 30ms 音频淡入淡出，避免二次编码"
+        },
+        {
+          "name": "无损拼接",
+          "impl": "concat demuxer + -c copy",
+          "note": "要求所有分段共享同一帧率、编码参数与采样率"
+        },
+        {
+          "name": "响度归一",
+          "impl": "两遍 loudnorm I=-14 TP=-1 LRA=11",
+          "note": "预览可以退化为只做一遍；成片必须整片做一次，不要按章节各做一次"
+        },
+        {
+          "name": "后端能力矩阵",
+          "impl": "kajisho5 contract --json + doctor",
+          "note": "每个工具声明输入、所需 FFmpeg 组件与验证策略，能力状态分 available/missing/unknown"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "字幕先于叠加层画进画面",
+          "detail": "先把字幕画进画面再叠加动画，动画会把字幕盖住，而且不报错。对策：字幕永远是 filter 链的最后一步。",
+          "source": "video-use/SKILL.md:22"
+        },
+        {
+          "title": "单遍 filtergraph 双重编码",
+          "detail": "带叠加层时用一条 filtergraph 从头走到尾，每段会被编码两次，画质下降还慢。对策：分段抽取后用 -c copy 拼接，再做合成。",
+          "source": "video-use/SKILL.md:23"
+        },
+        {
+          "title": "各章节单独做响度",
+          "detail": "长片如果按章节分别做 loudnorm，章节之间会出现音量突然变化的台阶。对策：分章节渲染时传 --no-loudnorm，整片合并后再统一调整响度。",
+          "source": "open-edit/docs/FLOW.md:31"
+        },
+        {
+          "title": "分段帧率不一致",
+          "detail": "多个来源的 EDL 混了 30fps 与 60fps，逐段各自探测帧率会导致 concat -c copy 拼接失败。对策：全片只解析出一个 out_rate，并强制用于每一段。",
+          "source": "video-use/helpers/render.py:328"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "video-use",
+          "path": "video-use/helpers/render.py",
+          "line": 240,
+          "why": "分段抽取的完整 ffmpeg 参数与质量档"
+        },
+        {
+          "repo": "kajisho5-ffmpeg-skill",
+          "path": "kajisho5-ffmpeg-skill/scripts/render.py",
+          "line": 34,
+          "why": "声明式工程的 11 个渲染阶段顺序"
+        },
+        {
+          "repo": "ai-video-editor",
+          "path": "ai-video-editor/skills/edit-timeline-studio/SKILL.md",
+          "line": 62,
+          "why": "渲染是独立的版本化请求，不进写计划"
+        },
+        {
+          "repo": "open-edit",
+          "path": "open-edit/docs/FLOW.md",
+          "line": 31,
+          "why": "design→lint→verify→WCAG→record→probe-qa→mux 的检查链"
+        }
+      ],
+      "children": [
+        {
+          "id": "render-compiler",
+          "title": "Compiler 与能力矩阵",
+          "tag": "atomic",
+          "summary": "同一份 IR 编译到不同后端，能力不够就显式拒绝",
+          "goal": "让渲染后端可以替换。编译前先查询目标后端支持哪些特性，不支持的直接报告缺口，不静默丢弃效果。",
+          "inputs": [
+            "ProjectDoc",
+            "目标后端与交付规格"
+          ],
+          "outputs": [
+            "FFmpeg 作业 / Remotion 组合 / HyperFrames 文档",
+            "降级说明"
+          ],
+          "atomic": [
+            {
+              "name": "机器可读契约",
+              "impl": "npx ffmpeg-skill contract --json",
+              "note": "声明每个工具的输入 schema、角色、所需 FFmpeg 组件与验证策略，MCP 的工具接口从它派生"
+            },
+            {
+              "name": "能力探测",
+              "impl": "ffmpeg-skill doctor / hyperframes doctor --json",
+              "note": "doctor --json 不管成功失败都以退出码 0 结束，必须用 jq -e '.ok' 判断，不能看退出码"
+            },
+            {
+              "name": "声明式工程",
+              "impl": "kajisho5 render.py project.json",
+              "note": "阶段固定：clips→join→silence→fit→captions→graphics→overlays→audio→loudness→export→check"
+            },
+            {
+              "name": "显式降级",
+              "impl": "ai-video-editor project.render",
+              "note": "只渲染 Visuals/Voiceover/Music 这个可移植子集，遇到不支持的合成特性直接拒绝"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "静默假设能力存在",
+              "detail": "用 npm run ... --if-present 或试跑来探测能力，脚本缺失时也会返回成功，Agent 会误以为能力可用。对策：读 contract 或 doctor 的结构化结果。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:17"
+            },
+            {
+              "title": "缺口被 UI 自动化掩盖",
+              "detail": "命令层缺某个操作就改用模拟界面点击，结果既不确定也不幂等。对策：先明确报出缺失的命令或运行时能力；用 UI 兜底时必须声明限制。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:18"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/README.md",
+              "line": 45,
+              "why": "contract --json 与验证策略的设计说明"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/scripts/render.py",
+              "line": 6,
+              "why": "project.json 的完整字段与阶段"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-cli/SKILL.md",
+              "line": 87,
+              "why": "doctor --json 总是以退出码 0 结束，需按返回内容判断"
+            }
+          ]
+        },
+        {
+          "id": "render-ffmpeg",
+          "title": "FFmpeg 精剪与封装",
+          "tag": "atomic",
+          "summary": "分段抽取、无损拼接、叠加、字幕最后画进画面、响度归一",
+          "goal": "把 EDL 稳定地编译成成片。每一步都用可复现的参数，避免二次编码、切点杂音和字幕错位。",
+          "inputs": [
+            "edl.json",
+            "源片与叠加层",
+            "master.srt"
+          ],
+          "outputs": [
+            "clips_graded/seg_NN.mp4",
+            "base.mp4",
+            "final.mp4"
+          ],
+          "atomic": [
+            {
+              "name": "分段抽取",
+              "impl": "-ss {start} -i src -t {dur} -vf scale -af afade -c:v libx264",
+              "note": "final 档 preset fast CRF 20；preview 档 medium 22；draft 档 ultrafast 28，只用于检查切点"
+            },
+            {
+              "name": "边界淡入淡出",
+              "impl": "afade=t=in:st=0:d=0.03,afade=t=out:st={dur-0.03}:d=0.03",
+              "note": "每段首尾各做 30ms 淡出，消除切点的咔哒声"
+            },
+            {
+              "name": "无损拼接",
+              "impl": "ffmpeg -f concat -safe 0 -i _concat.txt -c copy",
+              "note": "统一 -r out_rate、-c:a aac -b:a 192k -ar 48000 才能拼"
+            },
+            {
+              "name": "字幕烧录",
+              "impl": "subtitles='{abs}':force_style='...'",
+              "note": "把字幕直接画进画面像素；放在 overlay 之后；短视频常用 MarginV=35，叙事片 60–80"
+            },
+            {
+              "name": "响度两遍",
+              "impl": "loudnorm print_format=json 测量后回填",
+              "note": "I=-14 TP=-1 LRA=11；测量失败就退回单遍模式"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "adelay 只延迟左声道",
+              "detail": "adelay 默认 all=false，只填一个值时只延迟第一个声道，后面的语音会全部挤在另一个声道的 0 秒处。对策：写 adelay=<ms>:all=1，或给每个声道各写一个值。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:71"
+            },
+            {
+              "title": "-c copy 切点对齐到关键帧",
+              "detail": "流复制（不重编码）模式下，切点会被对齐到最近的关键帧（可独立解码的帧），音频则落在包边界上（AAC 约 21ms）。对策：需要帧级精确时加 --accurate 重新编码。",
+              "source": "kajisho5-ffmpeg-skill/scripts/cut.py:4"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-use",
+              "path": "video-use/helpers/render.py",
+              "line": 272,
+              "why": "30ms 淡入淡出与质量档的实际参数"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/helpers/render.py",
+              "line": 371,
+              "why": "concat demuxer 无损拼接实现"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/helpers/render.py",
+              "line": 496,
+              "why": "loudnorm 目标常量 I/TP/LRA"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/scripts/cut.py",
+              "line": 4,
+              "why": "流复制与精确剪切的精度差异说明"
+            }
+          ]
+        },
+        {
+          "id": "render-remotion",
+          "title": "Remotion 后端",
+          "tag": "atomic",
+          "summary": "React 组合渲染，用 still 截取指定帧做核验",
+          "goal": "把需要程序化排版的镜头交给 Remotion，并保证渲染完成后能逐帧检查实际画面，而不是靠文字描述。",
+          "inputs": [
+            "组合 id 与 props",
+            "源片时长与 fps"
+          ],
+          "outputs": [
+            "out/video.mp4",
+            "check_<frame>.png"
+          ],
+          "mg": "MG（Motion Graphics，图形动画）首选后端。渲染依赖 Chromium，自动下载失败时改用 headless_shell；母版（最终成品）用 --crf 16，透明层用 prores 4444。",
+          "atomic": [
+            {
+              "name": "渲染",
+              "impl": "npx remotion render src/index.ts <CompId> out/video.mp4 --codec h264 --crf 17",
+              "note": "组合时长要用 ffprobe 读到的源片时长设定"
+            },
+            {
+              "name": "精确抽帧",
+              "impl": "npx remotion still ... --frame N --overwrite",
+              "note": "不依赖系统里的 ffmpeg，渲染出来的就是指定的那一帧，适合没有 ffmpeg 的环境"
+            },
+            {
+              "name": "浏览器兜底",
+              "impl": "--browser-executable=<path>",
+              "note": "自动下载失败时指向 Playwright 的 chromium；报 Old Headless removed 时用 headless_shell"
+            },
+            {
+              "name": "现有素材增强",
+              "impl": "<OffthreadVideo src={staticFile(...)} />",
+              "note": "把源片放进 public/ 作为底层，图形与调色叠在上面"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "忘了 --overwrite 看旧帧",
+              "detail": "重新渲染时不带 --overwrite，截出来的还是上一版的 PNG，改动就看不出来。对策：每次核验都带 --overwrite。",
+              "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:133"
+            },
+            {
+              "title": "组合时长与内容不符",
+              "detail": "durationInFrames 比场景内容长，片尾会出现一段没有内容的静止画面；短了内容会被截断。对策：先用 ffprobe 读源片时长，再设置组合时长。",
+              "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:132"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 63,
+              "why": "渲染与浏览器兜底的完整命令"
+            },
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 78,
+              "why": "强制的逐帧截图核验循环"
+            },
+            {
+              "repo": "remotion-dev-skills",
+              "path": "remotion-dev-skills/skills/remotion-render/SKILL.md",
+              "line": 7,
+              "why": "官方 render/still 命令与透明视频入口"
+            }
+          ]
+        },
+        {
+          "id": "render-hyperframes",
+          "title": "HyperFrames 后端",
+          "tag": "atomic",
+          "summary": "HTML 合成，lint 到 check 到 preview 再 render",
+          "goal": "让 HTML/CSS 动画像网页一样被检查，再确定性地逐帧渲染成视频或带 alpha（透明通道）的叠加层。",
+          "inputs": [
+            "index.html 合成",
+            "媒体资源"
+          ],
+          "outputs": [
+            "render.mp4 / render.webm",
+            "check 报告与快照"
+          ],
+          "mg": "另一条主力后端。lint 报出 error 会连带关掉布局与对比度审计，这时 check 显示 0 samples，看起来很干净，其实什么检查都没跑。",
+          "atomic": [
+            {
+              "name": "开发循环",
+              "impl": "init → lint → check → preview → render",
+              "note": "check 内部先跑 lint，再用一次浏览器会话和一次 seek 扫描做审计"
+            },
+            {
+              "name": "check 覆盖面",
+              "impl": "运行时错误、失败请求、布局、*.motion.json 断言、WCAG 对比度",
+              "note": "持续存在的问题决定退出码，入场/出场瞬间的临时问题只提示；--strict 让警告也拦截"
+            },
+            {
+              "name": "透明叠加",
+              "impl": "hyperframes render . --format webm -o render.webm",
+              "note": "需要透明通道（alpha）的叠加层用 webm，普通叠加用 mp4"
+            },
+            {
+              "name": "确定性渲染",
+              "impl": "headless Chrome 逐帧 seek + FFmpeg 编码",
+              "note": "render --docker --strict 得到可复现的容器渲染"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "检查过了就直接渲染",
+              "detail": "check 通过不等于创意上被认可，直接渲染可能浪费大量时间。对策：停在 final preview，等用户批准后再 render。",
+              "source": "hyperframes/skills/hyperframes-cli/SKILL.md:98"
+            },
+            {
+              "title": "挂载缺陷当成小问题",
+              "detail": "未样式化的小块内容、画布大小的图标、缺失主元素、时间线注册超时，这些挂载（页面加载）问题都会让渲染失败。对策：按渲染阻断级处理，先修挂载。",
+              "source": "hyperframes/skills/hyperframes-cli/SKILL.md:75"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-cli/SKILL.md",
+              "line": 54,
+              "why": "check 的审计范围与 strict 语义"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/README.md",
+              "line": 232,
+              "why": "逐帧 seek 加 FFmpeg 的确定性渲染原理"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 210,
+              "why": "在剪辑流程里把 HyperFrames 当叠加层槽位使用"
+            }
+          ]
+        },
+        {
+          "id": "render-other",
+          "title": "其他渲染后端",
+          "tag": "shared",
+          "summary": "MoviePy 多轨、ECS 运行时、浏览器截帧三条备选路径",
+          "goal": "覆盖 FFmpeg 与前端框架之外的场景，比如需要在 Python 里做多轨合成，或需要与编辑器状态同源的截图。",
+          "inputs": [
+            "时间线 plan",
+            "字幕与配音"
+          ],
+          "outputs": [
+            "合成视频",
+            "与导出一致的检查帧"
+          ],
+          "atomic": [
+            {
+              "name": "MoviePy 多轨",
+              "impl": "FireRed RenderVideoPipeline + AudioTrackComposer",
+              "note": "视频轨 concat，BGM 先拼再 loop/trim，字幕用 Pillow 逐帧绘制"
+            },
+            {
+              "name": "ECS 运行时",
+              "impl": "Diffusion Studio dapi capture / dapi check",
+              "note": "capture 截出的就是导出时会产生的帧；check 检查黑帧空隙、永远不可见的节点、加载失败的素材"
+            },
+            {
+              "name": "浏览器截帧",
+              "impl": "framecraft generate_scene_html → render_scene_frames → composite_video",
+              "note": "HTML 场景转帧序列再合成，适合产品演示"
+            },
+            {
+              "name": "确定性算子库",
+              "impl": "video-edit-tools pipeline(input, ops[])",
+              "note": "所有函数返回 Result 不抛异常，同输入同参数出同结果"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "画布尺寸靠猜",
+              "detail": "多个来源的画面比例不一致时随便取一个宽高，H.264 遇到奇数尺寸会直接失败。对策：按主导宽高比推算画布尺寸，并用 make_even 取偶。",
+              "source": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/render_video.py:175"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/render_video.py",
+              "line": 574,
+              "why": "多轨音频合成与 BGM 循环裁剪"
+            },
+            {
+              "repo": "editor",
+              "path": "editor/README.md",
+              "line": 202,
+              "why": "dapi check 的结构性缺陷检查项"
+            },
+            {
+              "repo": "framecraft",
+              "path": "framecraft/framecraft.py",
+              "line": 531,
+              "why": "帧序列到成片的合成实现"
+            },
+            {
+              "repo": "video-edit-tools",
+              "path": "video-edit-tools/README.md",
+              "line": 13,
+              "why": "Never Throws 与确定性算子的设计约束"
+            }
+          ]
+        },
+        {
+          "id": "render-nle-export",
+          "title": "剪辑软件（NLE）工程导出",
+          "tag": "shared",
+          "summary": "同一份 IR 导出 FCPXML、xmeml、剪映草稿和字幕边车（附属文件）",
+          "goal": "把成片交给真正的剪辑师继续改。导出要明确列出丢失的属性，不假装完全保真。",
+          "inputs": [
+            "EDL（剪辑决策清单）或 ProjectDoc",
+            "源片探测结果"
+          ],
+          "outputs": [
+            "cut.fcpxml / cut.xml / master.srt",
+            "剪映草稿目录"
+          ],
+          "atomic": [
+            {
+              "name": "双方言导出",
+              "impl": "premiere-agent export_fcpxml.py 一次出三个文件",
+              "note": "FCPXML 1.10+ 给 Resolve/FCP X，FCP7 xmeml 给 Premiere，SRT 走 File→Import"
+            },
+            {
+              "name": "变速导出",
+              "impl": "FCPXML <timeMap> / xmeml Time Remap filter",
+              "note": "速度上限 1000%；音频按 audio_strategy 处理：静音，或变调修正（恢复变速改变的音高）"
+            },
+            {
+              "name": "多目标导出",
+              "impl": "baocut export --to premiere|resolve|final-cut-pro|shotcut|kdenlive|capcut",
+              "note": "返回 blockers/warnings/omitted/lossy 四个数组，必须读完再决定"
+            },
+            {
+              "name": "剪映草稿",
+              "impl": "pyJianYingDraft 建轨 + mac_draft.macify/install",
+              "note": "底片（主画面素材）按镜头切段，双语字幕拆成两条文本轨，音效（SFX）按贪心算法分轨避免同轨重叠"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "序列帧率低于源帧率",
+              "detail": "xmeml 的 in/out 按序列帧率写，Premiere 却按源片的原生帧率解释，导致源区间越界，变速片段后半段出现斜条纹。对策：序列的帧率与分辨率取所有源片的最大 fps 与最大像素面积。",
+              "source": "premiere-agent/helpers/export_fcpxml.py:406"
+            },
+            {
+              "title": "微秒边界各自取整",
+              "detail": "剪映相邻两段的起点和时长如果分别取整，会产生 1µs 级的缝隙或重叠，pyJianYingDraft 会直接报 SegmentOverlap。对策：用 Timerange(f2us(f0), f2us(f1)-f2us(f0)) 计算。",
+              "source": "video-shotcraft/references/jianying-export.md:79"
+            },
+            {
+              "title": "Premiere 读不了 .fcpxml",
+              "detail": "只导出 FCPXML 会让 Premiere 用户卡在第三方转换器上。对策：同时输出 FCP7 xmeml，Premiere 原生就能读。",
+              "source": "premiere-agent/README.md:579"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/export_fcpxml.py",
+              "line": 400,
+              "why": "序列帧率与分辨率取最大值的原因"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/export_fcpxml.py",
+              "line": 225,
+              "why": "FCPXML frameDuration 的帧率对齐容差"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/jianying-export.md",
+              "line": 84,
+              "why": "剪映建轨骨架与字幕样式换算"
+            },
+            {
+              "repo": "baocut",
+              "path": "baocut/skills/baocut/references/exports.md",
+              "line": 32,
+              "why": "六种剪辑软件（NLE）导出目标与丢失属性上报"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/ai/src/tools/export-tools.ts",
+              "line": 25,
+              "why": "fcpxmlTarget 区分 Resolve 与 FCP 的裁剪编码"
+            }
+          ]
+        },
+        {
+          "id": "render-cache",
+          "title": "缓存、幂等与哈希",
+          "tag": "atomic",
+          "summary": "派生产物按内容哈希缓存，改动后必须重跑并对比",
+          "goal": "让迭代成本保持恒定：源文件没变就复用转写和代理文件（低分辨率草稿副本）；源变了或代码修了就强制重算，不能拿旧产物冒充新结果。",
+          "inputs": [
+            "源文件 SHA-256",
+            "算法版本与参数"
+          ],
+          "outputs": [
+            "缓存命中的派生产物",
+            "*.provenance.json 边车（附属文件）"
+          ],
+          "atomic": [
+            {
+              "name": "派生产物键",
+              "impl": "DerivedArtifactKey{assetId, sourceRevision, artifactKind, algorithmVersion, policyHash}",
+              "note": "算法版本也计入缓存键，升级模型时旧缓存自动失效"
+            },
+            {
+              "name": "溯源边车",
+              "impl": "video-edit-cli 每个派生文件写 *.provenance.json",
+              "note": "记输入路径与 SHA-256、工具版本、参数、底层真实执行的命令"
+            },
+            {
+              "name": "幂等应用",
+              "impl": "appliedOperationIds 去重",
+              "note": "全部 id 都已应用时直接返回当前 revision，不再改工程"
+            },
+            {
+              "name": "转写缓存",
+              "impl": "video-use Hard Rule 9",
+              "note": "源文件本身没变就不重新转写；不可变输入的不可变输出"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "改完代码拿旧产物充数",
+              "detail": "修了产品或 Skill 后直接展示上一次渲染的结果，问题看起来就像消失了。对策：从干净的工程重跑，记录新产物的 mtime 与 SHA-256 并与旧产物对比，禁止改名或复制。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:76"
+            },
+            {
+              "title": "重复导入生成重复资产",
+              "detail": "同一份媒体被多次导入会产生多个 assetId，替换和转写都要各做一遍。对策：按 sourceContentHash 找到规范资产（同一内容只存一份），并原子地把所有引用重定向过去。",
+              "source": "OpenChatCut/src/editor/mediaContentIdentity.ts:21"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/mediaSourceRevision.ts",
+              "line": 23,
+              "why": "派生产物缓存键的五个字段"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/concepts.md",
+              "line": 53,
+              "why": "不可变源与 provenance 边车的完整约定"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/src/lib/projectCommandEngine.js",
+              "line": 665,
+              "why": "operation id 幂等去重实现"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa",
+      "title": "QA、评测与生产治理",
+      "tag": "shared",
+      "summary": "计划期 lint、成片探针、切点审片、有界自修与治理记录",
+      "goal": "工具返回成功只证明操作执行过，不证明片子是对的。必须有敢于说“不”的质量门禁，而且拒绝理由可复现、可测试。",
+      "inputs": [
+        "edit plan / EDL（剪辑决策清单）",
+        "渲染成片与 manifest",
+        "源片与转写"
+      ],
+      "outputs": [
+        "lint 报告与 blockers",
+        ".qc.json 探针报告",
+        "审片评分与返修记录"
+      ],
+      "interview": "重点检查曲解率、观点完整性、说话人正确性、截词率与信息密度；导出前要重读边界处的转写。",
+      "sports": "重点查事件召回、边界误差、比分与球员一致、完整事件率，以及回放是否被当成直播。",
+      "mg": "质量门变成 lint→对比度/inspect→逐帧截图检查，最多 3 轮；不收敛也照常渲染，但必须标注 DELIVERED WITH N OPEN ISSUES。",
+      "atomic": [
+        {
+          "name": "计划门",
+          "impl": "chatmonteur plan gate + ClipTalk validate_edit_sequence",
+          "note": "在开始渲染前先否决不合格的计划；规则都经过单元测试，不是写在 prompt 里的启发式建议"
+        },
+        {
+          "name": "文件门",
+          "impl": "chatmonteur qc_ffmpeg",
+          "note": "把成片当陌生文件重新打开检查，发现问题就停止交付并留下 .qc.json"
+        },
+        {
+          "name": "切点证据",
+          "impl": "timeline_view.py / cut inspect / look.py",
+          "note": "每个切点生成 filmstrip（连续缩略图条）和波形图，只在决策点使用，不做全片扫描"
+        },
+        {
+          "name": "有界自修",
+          "impl": "ClipTalk AUTOMATIC_REPAIR_MAX_ROUNDS=2",
+          "note": "每轮最多 6 个局部动作，不收敛就交人工"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "只信工具返回成功",
+          "detail": "编辑操作执行成功不代表成片真实、连贯、技术合格。对策：判断完成的标准是证据，包括截帧画面、音频测量、边界转写复读。",
+          "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:3"
+        },
+        {
+          "title": "抽首尾帧判黑帧",
+          "detail": "片头淡入和片尾卡（结尾的定版画面）本来就是黑的，抽 0% 和 100% 两个位置会把每个做得好的片子都误判为失败。对策：抽 10/35/65/90% 四个位置。",
+          "source": "chatmonteur/chatmonteur/tools/qc.py:43"
+        },
+        {
+          "title": "亮度阈值写成 16",
+          "detail": "视频用 limited range（亮度范围受限）编码，纯黑正好是 Y=16，“小于 16”的判据永远不会触发。对策：阈值取 20，并要求 0.5 秒后仍然是黑的才算损坏。",
+          "source": "chatmonteur/chatmonteur/tools/qc.py:44"
+        },
+        {
+          "title": "一个平均分掩盖小类",
+          "detail": "全局平均分会把某个小题材的系统性失败藏起来。对策：按 profile（题材配置）分开统计，并单独检查反例和有分歧的样本。",
+          "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:83"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+          "line": 62,
+          "why": "10 项基准指标与证据留存清单"
+        },
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/chatmonteur/tools/qc.py",
+          "line": 120,
+          "why": "文件门的完整判定规则集"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/quality_gate.py",
+          "line": 229,
+          "why": "EDL 语义校验与关键问题分级"
+        },
+        {
+          "repo": "video-use",
+          "path": "video-use/SKILL.md",
+          "line": 91,
+          "why": "对渲染输出而非源片的自评流程"
+        }
+      ],
+      "children": [
+        {
+          "id": "qa-plan-lint",
+          "title": "计划期 lint",
+          "tag": "atomic",
+          "summary": "开始渲染前先查 schema、引用、范围、冲突与领域事实",
+          "goal": "把能在纯数据上发现的问题全部前置。渲染很贵，错误的计划不该消耗一次渲染。",
+          "inputs": [
+            "plan.json / EDL / storyboard"
+          ],
+          "outputs": [
+            "blockers 与 warnings",
+            "critical issue 列表"
+          ],
+          "interview": "检查字幕时间单调递增、删词后相邻片段仍落在词边界上，并且 pad（边界外多留的缓冲时长）不会把刚删掉的填充词（“呃”“嗯”等口头词）加回来。",
+          "sports": "检查同一事件不重复出现、跨章节不使用溶解（渐变过渡）与音频桥（声音跨镜头延续）、受保护镜头不被加速。",
+          "mg": "检查的是确定性契约：禁用 Date.now、未设随机种子的 Math.random、repeat:-1；CSS 初始 transform 与 GSAP 动画同属性冲突时直接报错。",
+          "atomic": [
+            {
+              "name": "结构校验",
+              "impl": "video-edit-cli plan validate",
+              "note": "拒绝未知字段；按真实媒体时长核对范围；同源片段必须递增且不重叠；每段必须有 reason"
+            },
+            {
+              "name": "工程感知预演",
+              "impl": "project.diff",
+              "note": "用与 apply 相同的 reducer 预演，检查 revision 与 clip/track 前置条件，不写归档"
+            },
+            {
+              "name": "领域事实校验",
+              "impl": "ClipTalk validate_edit_sequence",
+              "note": "受保护镜头缺上下文判 action_boundary critical；跨事件溶解判 cross_event_dissolve critical；受保护镜头 playbackRate>1 判 unsafe_speed"
+            },
+            {
+              "name": "无聊度评分",
+              "impl": "chatmonteur _thin_spots",
+              "note": "出现任一情况都判不合格：超 90s 无视觉事件、文字占屏超 60%、唯一插卡比低于 60%、连续相同 zoom"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "只校验 schema 不校验语义",
+              "detail": "形状合法的计划仍可能引用不存在的片段或超出媒体时长。对策：做两级校验，先传输层，再工程语义层。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/references/command-contract.md:30"
+            },
+            {
+              "title": "探测失败被静默吞掉",
+              "detail": "探测阶段的失败如果被静默吞掉，门禁就形同虚设，什么也保护不了。对策：ffprobe 缺失时要抛错，而不是返回 None。",
+              "source": "chatmonteur/chatmonteur/tools/storyboard.py:289"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/concepts.md",
+              "line": 111,
+              "why": "plan validate 的四条硬规则"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/chatmonteur/tools/storyboard.py",
+              "line": 125,
+              "why": "计划门的四个阈值常量与理由"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/quality_gate.py",
+              "line": 299,
+              "why": "受保护镜头与跨事件转场的判定"
+            }
+          ]
+        },
+        {
+          "id": "qa-render-probe",
+          "title": "渲染探针",
+          "tag": "atomic",
+          "summary": "重新打开成片：多点截帧、测音频、比对时长、判定交付状态",
+          "goal": "把成片当陌生人的文件重新打开。技术缺陷必须在交付前被机器发现，而不是被观众发现。",
+          "inputs": [
+            "renderId 或成片路径",
+            "期望时长与规格"
+          ],
+          "outputs": [
+            ".qc.json 报告",
+            "ship / review_rights / continue_editing 状态"
+          ],
+          "atomic": [
+            {
+              "name": "成片核验",
+              "impl": "verify_export(renderId|src, maxCuts≤8)",
+              "note": "检查流是否存在、时长、分辨率、帧率、黑帧与画面卡死、长静音、音频峰值，并输出切点前后对照表"
+            },
+            {
+              "name": "定点抽帧",
+              "impl": "10/35/65/90% 四点采样",
+              "note": "luma<20 判为黑帧，且 0.5 秒后仍是黑的才算损坏；片头淡入是正常设计，不算缺陷"
+            },
+            {
+              "name": "音频判据",
+              "impl": "volumedetect mean/peak",
+              "note": "mean<-60 dBFS 判为静音，peak>-0.5 dBFS 判为削波（音量顶满导致失真）"
+            },
+            {
+              "name": "平台规格",
+              "impl": "kajisho5 check --platform",
+              "note": "youtube/shorts/reels/tiktok/x/linkedin/broadcast/podcast；响度（LUFS）目标 -14，broadcast -23，podcast -16，TP ≤ -1"
+            },
+            {
+              "name": "交付状态",
+              "impl": "draft→continue_editing，internal→review_rights，cleared→ship",
+              "note": "版权未结清的母版（最终成品文件）不能进入 ship"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "时长漂移无人核对",
+              "detail": "编码器可能丢失或多出内容，成片时长会悄悄变化。对策：把期望时长传进探针，偏差超过 25% 判失败；不给期望值至少要报 warning。",
+              "source": "chatmonteur/chatmonteur/tools/qc.py:159"
+            },
+            {
+              "title": "只看提交成功",
+              "detail": "渲染任务提交成功不等于产物能播放。对策：追踪任务到最终状态，并检查产出的媒体文件本身。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:46"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/export-qa-tools.ts",
+              "line": 5,
+              "why": "verify_export 的检查项与证据表"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/chatmonteur/tools/qc.py",
+              "line": 41,
+              "why": "抽帧位置、黑帧阈值与漂移阈值"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/scripts/check.py",
+              "line": 25,
+              "why": "八个平台的交付规格表"
+            },
+            {
+              "repo": "framecraft",
+              "path": "framecraft/framecraft.py",
+              "line": 1009,
+              "why": "blackdetect=d=0.5:pix_th=0.1 的实际用法"
+            }
+          ]
+        },
+        {
+          "id": "qa-cut-review",
+          "title": "切点审片",
+          "tag": "atomic",
+          "summary": "对渲染输出逐切点看图听波形，最多三轮自修",
+          "goal": "切点是最容易出问题也最容易被忽略的地方。用图像证据判断，而不是相信自己的时间计算。",
+          "inputs": [
+            "成片或预览",
+            "EDL（剪辑决策清单）与转写"
+          ],
+          "outputs": [
+            "切点检查图",
+            "自评通过或上报清单"
+          ],
+          "atomic": [
+            {
+              "name": "切点图",
+              "impl": "timeline_view.py <video> <start> <end>",
+              "note": "生成 filmstrip（连续缩略图条）加波形的 PNG，按需下钻细看，不做全片扫描"
+            },
+            {
+              "name": "成片自评",
+              "impl": "对渲染输出在每个切点 ±1.5s 抽图",
+              "note": "检查画面跳变与白场闪烁、波形尖峰、字幕被叠加层遮住、叠加层帧错位；再采集首 2s、末 2s 与 2–3 个中点"
+            },
+            {
+              "name": "轮次上限",
+              "impl": "最多 3 轮自评",
+              "note": "第 3 轮仍有问题就上报用户，不无限循环"
+            },
+            {
+              "name": "无渲染时的替代",
+              "impl": "premiere-agent find_quote.py --batch",
+              "note": "每段输出两行 in/out 锚点，一次调用就能核验全部 EDL 边界：40 个切点的 EDL 只需 1 次调用，不是 80 次"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把切点图当扫描工具",
+              "detail": "全片高频截图会耗尽预算，还造成信息过载。对策：只在决策点和自评时使用。",
+              "source": "video-use/SKILL.md:77"
+            },
+            {
+              "title": "在源片上自评",
+              "detail": "只看源片看不出合成后的遮挡、帧错位与响度问题。对策：自评必须针对渲染输出，而不是源片。",
+              "source": "video-use/SKILL.md:91"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 99,
+              "why": "自评四项检查与 3 轮上限"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/reference.md",
+              "line": 360,
+              "why": "cut inspect 汇总帧、波形、预览与转写上下文"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/SKILL.md",
+              "line": 176,
+              "why": "无渲染产物时的 EDL 边界批量自评"
+            },
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/scripts/look.py",
+              "line": 2,
+              "why": "带时间码的接触表（多帧缩略图拼图）与对比帧"
+            }
+          ]
+        },
+        {
+          "id": "qa-interview-eval",
+          "title": "访谈评测指标",
+          "tag": "interview",
+          "summary": "曲解率、观点完整、说话人正确、截词率、信息密度",
+          "goal": "长访谈的失败主要是语义失真而非技术缺陷。指标要盯住意思有没有被剪坏。",
+          "inputs": [
+            "源转写与成片",
+            "人工标注的可接受边界"
+          ],
+          "outputs": [
+            "六维评分与校准分",
+            "问题清单"
+          ],
+          "interview": "六维加权：content .20、narrative .20、rhythm .15、continuity .20、audiovisual .15、goalMatch .10。",
+          "atomic": [
+            {
+              "name": "语义保真",
+              "impl": "meaning fidelity",
+              "note": "不得改变主张、归属、因果或时间顺序；标题与插入画面也不能改变原意"
+            },
+            {
+              "name": "独立可懂",
+              "impl": "standalone clarity + 边界复读",
+              "note": "导出前重读边界处的转写：首句不能是没头没尾的半句话，尾句要收得住"
+            },
+            {
+              "name": "截词率",
+              "impl": "词边界对齐 + 30–200ms pad",
+              "note": "ASR 时间戳有 50–100ms 漂移，pad（边界外多留的缓冲）用来吸收漂移；小于 150ms 的间隙不安全"
+            },
+            {
+              "name": "分数校准",
+              "impl": "ClipTalk calibrate_review_report",
+              "note": "最终分 = .35×模型总分 + .65×加权分，再按确定性证据扣分"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "只看模型总分",
+              "detail": "一个偏高的总分会主导排序，掩盖单项塌陷。对策：用固定的评分细则加权，再按可测量的证据扣分。",
+              "source": "ClipTalk/app/composition_review.py:528"
+            },
+            {
+              "title": "填充词一律删干净",
+              "detail": "当填充词承担着笑点铺垫或情绪节拍的作用时，删掉反而会破坏表达。对策：保留时在 reason 里注明原因。",
+              "source": "premiere-agent/SKILL.md:254"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/composition_review.py",
+              "line": 26,
+              "why": "六个审片维度与权重"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+              "line": 52,
+              "why": "导出前的边界转写复读要求"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 28,
+              "why": "词边界与 pad 的硬规则"
+            }
+          ]
+        },
+        {
+          "id": "qa-sports-eval",
+          "title": "赛事评测指标",
+          "tag": "sports",
+          "summary": "事件召回精度、边界误差、比分一致、完整事件率、回放归并",
+          "goal": "赛事的失败主要是事实错误与事件结构不完整。指标要盯住事件本身对不对、全不全。",
+          "inputs": [
+            "人工标注的事件与可接受边界",
+            "成片与候选清单"
+          ],
+          "outputs": [
+            "召回/精度/边界误差",
+            "事实一致性问题列表"
+          ],
+          "sports": "事件弧（一个事件的完整叙事链）必须完整：buildup → decisive play → result → replay/reaction，结果不能没有铺垫。",
+          "atomic": [
+            {
+              "name": "事件级指标",
+              "impl": "Event recall / Top-k precision / Boundary error / Diversity",
+              "note": "边界误差是对人工标注的可接受区间计算的，不是对单一时间点"
+            },
+            {
+              "name": "事实一致",
+              "impl": "比分、球员、球队、日期、单位逐项比对",
+              "note": "OCR 得到的记分牌文本要回源帧确认后才可用于剪辑"
+            },
+            {
+              "name": "完整事件率",
+              "impl": "profile 事件弧完整性检查",
+              "note": "缺 buildup 或缺 result 的片段判不合格"
+            },
+            {
+              "name": "技术缺陷率",
+              "impl": "黑帧、削波、错误裁切、字幕错误、空隙、离线媒体",
+              "note": "与导出完成率一起构成技术层面的指标"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把回放当直播",
+              "detail": "如果回放转场（镜头过渡）没被识别，回放画面会被当成实时进球剪进正片。对策：把 replay transition 列为必查信号，并明确列入失败模式。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:9"
+            },
+            {
+              "title": "同一事件重复出现",
+              "detail": "直播和回放各出现一次，观众在成片里会把同一个进球看两遍。对策：按事件 id 做 run（连续重复）检测，重复事件判为问题。",
+              "source": "ClipTalk/app/quality_gate.py:277"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+              "line": 9,
+              "why": "赛事 profile（题材配置）的事件弧、信号与失败模式"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md",
+              "line": 72,
+              "why": "事件召回、边界误差等基准指标定义"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/quality_gate.py",
+              "line": 278,
+              "why": "事件章节 run 检测与重复事件判定"
+            }
+          ]
+        },
+        {
+          "id": "qa-self-repair",
+          "title": "有界自修复",
+          "tag": "decision",
+          "summary": "技术性问题自动修两三轮，语义问题回人工审批",
+          "goal": "让 Agent 能自己修复技术性缺陷，但不允许它在语义或事实问题上自作主张地反复尝试。",
+          "inputs": [
+            "审片报告与问题分类"
+          ],
+          "outputs": [
+            "返修版本与轮次记录",
+            "未解决问题上报"
+          ],
+          "mg": "自修只允许按预设档位做机械调整（字号、行数），不许照着渲染结果重做设计——设计系统一次定案，不再复议。",
+          "atomic": [
+            {
+              "name": "轮次预算",
+              "impl": "AUTOMATIC_REPAIR_MAX_ROUNDS=2",
+              "note": "先做两轮局部返修，仍不通过再走一轮证据恢复，之后交人工处理"
+            },
+            {
+              "name": "动作上限",
+              "impl": "apply_review_repairs(maximum_actions=6)",
+              "note": "每轮最多 6 个动作，只在已验证候选边界内做局部替换或裁剪"
+            },
+            {
+              "name": "收敛判据",
+              "impl": "review_improved(before, after)",
+              "note": "分数或质量档位没提升就 break，不再浪费一轮渲染"
+            },
+            {
+              "name": "生成类重试",
+              "impl": "montaj eval-scenes 默认 2 次重试",
+              "note": "用同样的 prompt 和参考再生成一次，结果有随机性；连续失败判为 prompt 问题，交回给人"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "技术问题与语义问题一起自动修",
+              "detail": "把改变含义的问题也交给自动修，会越修越偏。对策：语义与事实问题必须回人工审批，自动修只处理技术性缺陷。",
+              "source": "chatmonteur/README.md:39"
+            },
+            {
+              "title": "为过测试放松断言",
+              "detail": "把断言改弱让回归测试通过，缺陷就被制度性地隐藏了。对策：明确禁止仅为让测试通过而削弱断言。",
+              "source": "ai-video-editor/skills/edit-timeline-studio/SKILL.md:90"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/main.py",
+              "line": 2258,
+              "why": "自动返修轮次上限常量"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/main.py",
+              "line": 2377,
+              "why": "每轮动作上限与安全边界约束"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/eval-scenes/SKILL.md",
+              "line": 127,
+              "why": "生成类重试预算与成本估算"
+            }
+          ]
+        },
+        {
+          "id": "qa-governance",
+          "title": "溯源、成本与许可",
+          "tag": "shared",
+          "summary": "决策日志、内容哈希、预算控制与版权状态记录",
+          "goal": "让每个产物都能回答从哪来、花了多少、能不能发。治理数据是产物的一部分，不是事后补的报表。",
+          "inputs": [
+            "工具调用与产物",
+            "版权与授权信息"
+          ],
+          "outputs": [
+            "provenance（溯源）边车文件与决策日志",
+            "cost_log.json",
+            "交付状态标记"
+          ],
+          "atomic": [
+            {
+              "name": "溯源边车",
+              "impl": "*.provenance.json",
+              "note": "记输入路径与 SHA-256、工具版本、参数、真实执行的命令，可据此复现"
+            },
+            {
+              "name": "决策日志",
+              "impl": "AgentChangeSession{summary, operations, beforeDoc, afterRevision, rollbackable}",
+              "note": "保留最近 20 个会话，每个 operation 有 action/target/impact"
+            },
+            {
+              "name": "成本追踪",
+              "impl": "OpenMontage CostTracker estimate→reserve→reconcile",
+              "note": "模式 observe|warn|cap；默认总预算 $10、留 10% 余量、单次超 $0.50 需审批、首次用付费工具要确认"
+            },
+            {
+              "name": "许可记录",
+              "impl": "交付状态 review_rights",
+              "note": "媒体权利未结清的内部母版（最终成品文件）只能标 review_rights，不能 ship"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "门禁被跳过没人发现",
+              "detail": "需要人工审批的 gated 阶段被直接标成 completed，人其实从未看过。对策：审计 history，如果从未出现 awaiting_human 且没有 human_approved，就标 gate_skipped。",
+              "source": "OpenMontage/backlot/state.py:185"
+            },
+            {
+              "title": "证据只留在聊天里",
+              "detail": "工具调用、候选拒绝理由、渲染 id 都散落在对话里，无法复盘。对策：按清单落盘保存，包括源范围、候选清单、渲染最终状态与可播放产物路径。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:93"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/concepts.md",
+              "line": 53,
+              "why": "provenance 边车文件的四类记录内容"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/changeLog.ts",
+              "line": 6,
+              "why": "决策日志的保留上限与结构"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/docs/ARCHITECTURE.md",
+              "line": 310,
+              "why": "预算模式与审批阈值"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/README.md",
+              "line": 46,
+              "why": "ship / review_rights / continue_editing 三态定义"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gui",
+      "title": "GUI 与人机协作",
+      "tag": "shared",
+      "summary": "看板、故事板、提案审批、共用撤销栈与外部 Agent 桥",
+      "goal": "人和 Agent 改同一个工程。界面要显示 Agent 的理由和替补方案，并让人一键接受或拒绝。",
+      "inputs": [
+        "候选清单与评分",
+        "Agent 提案",
+        "工程状态"
+      ],
+      "outputs": [
+        "审批结果与选择",
+        "共用 undo 节点",
+        "看板与审批门状态"
+      ],
+      "interview": "主界面是转写工作台：按词、句、说话人、源剪切四层直接编辑。",
+      "sports": "主界面是事件板：按事件章节组织卡片，展示比分、回放标记与事件弧（一个事件的完整叙事链）完整性。",
+      "atomic": [
+        {
+          "name": "事件组 API",
+          "impl": "ClipTalk /api/jobs/{id}/event-groups 及其 segments 子路由",
+          "note": "create/from-candidates/rename/add/adjust/delete/reorder/move 八个动作"
+        },
+        {
+          "name": "提案审批",
+          "impl": "proposals POST → apply / DELETE",
+          "note": "逐项或整批应用，拒绝即整体丢弃草稿"
+        },
+        {
+          "name": "共用撤销",
+          "impl": "frontstage asUndoStep(store, label, reducers)",
+          "note": "Agent 工具与人手操作走同一个 store.dispatch 和同一条历史"
+        },
+        {
+          "name": "外部桥",
+          "impl": "Streamable HTTP MCP",
+          "note": "OpenChatCut 5199、frontstage 与 Palmier Pro 19789，均默认绑本机"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "Agent 与人各持一份状态",
+          "detail": "人在界面里改了工程，Agent 却还拿着旧快照去 apply。对策：apply 报 stale（已过期）时重读上下文并重建提案，绝不覆盖更新的 ProjectDoc。",
+          "source": "codex-chatcut/skills/open-chatcut/SKILL.md:30"
+        },
+        {
+          "title": "依赖文件监听刷新",
+          "detail": "高负载下文件监听（watcher）不可靠，界面显示的可能是旧工程。对策：写完文件后显式 POST /api/projects/{id}/reload。",
+          "source": "montaj/skills/edit-session/SKILL.md:14"
+        },
+        {
+          "title": "端口写死",
+          "detail": "假设服务跑在固定端口，重启后页面就打不开了。对策：用 serve --status 读取真实 URL，确认返回 HTTP 200 后再交给用户。",
+          "source": "baocut/skills/baocut/references/studio.md:31"
+        },
+        {
+          "title": "把提案当已生效",
+          "detail": "创建了提案就向用户报告改动完成，实际上还在等审批。对策：只有 apply 成功才算生效，缺审批时保持 pending 或标记拒绝。",
+          "source": "codex-chatcut/skills/open-chatcut/SKILL.md:29"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/timeline_api.py",
+          "line": 9,
+          "why": "事件组与逐镜头编辑的 17 条路由"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/edit_sessions_api.py",
+          "line": 9,
+          "why": "二次编辑会话的 10 条路由含 undo/redo"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/proposal.ts",
+          "line": 1,
+          "why": "propose→apply 契约与原子提交说明"
+        },
+        {
+          "repo": "OpenMontage",
+          "path": "OpenMontage/backlot/README.md",
+          "line": 19,
+          "why": "看板每个元素对应的磁盘数据源"
+        }
+      ],
+      "children": [
+        {
+          "id": "gui-highlight-board",
+          "title": "Highlight board",
+          "tag": "shared",
+          "summary": "候选卡片带证据与评分，可增删改排并排除",
+          "goal": "让人快速判断 Agent 选的片段对不对。卡片要自带证据，不需要回去翻源片。",
+          "inputs": [
+            "候选清单与评分",
+            "转写引语与音视频证据"
+          ],
+          "outputs": [
+            "确认的事件组",
+            "排除列表与选择状态"
+          ],
+          "interview": "卡片按语义单元组织：观点、故事、金句，展示引语与说话人。",
+          "sports": "卡片按事件章节组织，展示比分、回放标记与 buildup→result 的完整性。",
+          "atomic": [
+            {
+              "name": "事件组编辑",
+              "impl": "event-groups create / from-candidates / rename / segments reorder|move|adjust|delete",
+              "note": "从候选直接成组，组内片段可拖动排序与微调边界"
+            },
+            {
+              "name": "证据字段",
+              "impl": "segment.audioEvidence{transcriptExcerpt, speakers, emotions, audioEvents, energy}",
+              "note": "配合 score 显示在卡片上，供人快速判断"
+            },
+            {
+              "name": "排除与选择",
+              "impl": "POST /review-exclusions 与 /selection",
+              "note": "排除不是删除，被排除的候选仍可回收"
+            },
+            {
+              "name": "短视频批量",
+              "impl": "find_highlights(count=3, ratio=9:16, minSeconds=3, maxSeconds=60)",
+              "note": "支持 topic 与 instruction 约束，每条复制成独立竖版序列"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "先批量后审第一条",
+              "detail": "一次生成十几条再审查，错误的假设会被复制到每一条。对策：新源片或新 profile（题材配置）先把排名第一的那条做完并端到端检查，确认后再套用到其余候选。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/qa-and-evaluation.md:48"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/timeline_api.py",
+              "line": 10,
+              "why": "事件组与候选调整的具体路由"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/composition_review.py",
+              "line": 86,
+              "why": "卡片上的证据字段白名单"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/highlight-tool.ts",
+              "line": 5,
+              "why": "批量生成竖版高光的参数与默认值"
+            }
+          ]
+        },
+        {
+          "id": "gui-storyboard",
+          "title": "候选故事板与替补",
+          "tag": "shared",
+          "summary": "每个位置显示当前选择加两个替补与安全范围",
+          "goal": "让人改主意的成本接近零。替补和安全边界都预先算好，拖动即可换片而不会切进词里。",
+          "inputs": [
+            "候选排名",
+            "词边界与安全窗口"
+          ],
+          "outputs": [
+            "最终选择",
+            "预览产物"
+          ],
+          "atomic": [
+            {
+              "name": "版本化替补",
+              "impl": "generation.attempts[] + scene-1-v2.mp4",
+              "note": "旧 src 与判定都保留，当前 src 指向最新版，可随时回退"
+            },
+            {
+              "name": "安全范围",
+              "impl": "find_quote.py 返回 cut_window.safe_in_s / safe_out_s",
+              "note": "含 lead_silence_s 与 trail_silence_s，界面据此限制拖拽范围"
+            },
+            {
+              "name": "预览分离",
+              "impl": "edit-session preview 返回 202，preview media 用 GET",
+              "note": "预览异步生成，任何编辑后 _invalidate_preview 让旧预览失效"
+            },
+            {
+              "name": "证据下钻",
+              "impl": "timeline_view / cut inspect",
+              "note": "点开卡片时才生成 filmstrip（连续缩略图条）加波形，不预先对全片生成"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "替补覆盖原文件",
+              "detail": "重新生成时覆盖了原路径，好版本被坏版本盖掉，也无法比较。对策：版本化输出文件名，attempts 里保留旧 src 与评分。",
+              "source": "montaj/skills/eval-scenes/SKILL.md:157"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/eval-scenes/SKILL.md",
+              "line": 146,
+              "why": "替补记录与版本化文件命名"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/SKILL.md",
+              "line": 161,
+              "why": "安全窗口与前后静音字段"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/edit_sessions.py",
+              "line": 118,
+              "why": "编辑后主动作废旧预览"
+            }
+          ]
+        },
+        {
+          "id": "gui-proposal-diff",
+          "title": "提案 diff 与审批",
+          "tag": "atomic",
+          "summary": "自然语言理由加结构 diff，逐项或整批应用",
+          "goal": "让人在不读代码的前提下判断 Agent 要改什么。审批要能只批一部分，并且随时可撤。",
+          "inputs": [
+            "Agent 生成的 operations",
+            "工程快照"
+          ],
+          "outputs": [
+            "diff 视图",
+            "应用结果与 undo 节点"
+          ],
+          "atomic": [
+            {
+              "name": "提案结构",
+              "impl": "Proposal.options[].operations[{action, target, impact, rationale, callCount}]",
+              "note": "action 是中文动词，连续同类调用折叠成一行 callCount"
+            },
+            {
+              "name": "结构 diff",
+              "impl": "diffProjects → {projectFields[], tracks{added, removed, modified, orderBefore/orderAfter}}",
+              "note": "modified 精确到字段级 before/after"
+            },
+            {
+              "name": "两种审批",
+              "impl": "manual 逐项勾选 / auto 整批立即应用",
+              "note": "两种模式都合成一个 undo 节点"
+            },
+            {
+              "name": "撤销与重做",
+              "impl": "undo_last_change / redo_last_change",
+              "note": "也走提案路径，需用户确认；一次一步，多步要逐次确认"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "stale 时强行重放",
+              "detail": "工程已经被人改过，Agent 仍用旧快照 apply，就会覆盖别人的编辑。对策：报 stale（已过期）就重读工程并新建提案。",
+              "source": "codex-chatcut/skills/open-chatcut/SKILL.md:30"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/proposal.ts",
+              "line": 12,
+              "why": "Operation 的展示字段与 actions 回放机制"
+            },
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/src/lib/projectCommandEngine.js",
+              "line": 636,
+              "why": "字段级结构 diff 的具体形状"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/undo-tools.ts",
+              "line": 5,
+              "why": "撤销也走提案确认路径"
+            }
+          ]
+        },
+        {
+          "id": "gui-shared-undo",
+          "title": "多轨时间线与共用撤销",
+          "tag": "atomic",
+          "summary": "人和 Agent 改同一工程，共用一条历史",
+          "goal": "不要给 Agent 造第二套编辑通道。任何一方的改动都进同一条撤销栈，随时可回退。",
+          "inputs": [
+            "工具调用产生的 reducers",
+            "人的界面操作"
+          ],
+          "outputs": [
+            "带 label 的 undo 节点",
+            "工程日志"
+          ],
+          "mg": "共享的不是撤销栈而是时间表：SHOTS 是唯一事实来源，字幕、音效（SFX）、转场（镜头过渡）点全从它派生；交付前跑一次 parity（一致性校验）证明拆解无损。",
+          "atomic": [
+            {
+              "name": "同一撤销栈",
+              "impl": "asUndoStep(store, label, reducers)",
+              "note": "把一次工具调用的多个 reducer 折成一个带标签的历史节点"
+            },
+            {
+              "name": "纯 JSON 编辑",
+              "impl": "montaj trim / split / lift / ripple delete",
+              "note": "全是改 tracks 与 captions，渲染前不产生中间文件，改回 JSON 即撤销"
+            },
+            {
+              "name": "历史与恢复",
+              "impl": "baocut project log → project undo / redo → project restore <seq>",
+              "note": "restore 只在确认了具体历史条目后使用"
+            },
+            {
+              "name": "显式刷新",
+              "impl": "POST /api/projects/{id}/reload",
+              "note": "写完 project.json 或叠加层文件后主动推送界面刷新"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "外部改动后继续 undo",
+              "detail": "undo 已报告存在外部改动，如果仍机械地重复 undo，会撤掉别人刚做的编辑。对策：先重读工程，确认那次外部编辑也该撤销，再重复 undo。",
+              "source": "baocut/skills/baocut/references/editing.md:20"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/ai/src/tools/executor.ts",
+              "line": 13,
+              "why": "工具调用折叠为一个 undo 步骤"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/skills/edit-session/SKILL.md",
+              "line": 52,
+              "why": "四种剪辑操作对时间线 JSON 的影响"
+            },
+            {
+              "repo": "baocut",
+              "path": "baocut/skills/baocut/references/editing.md",
+              "line": 17,
+              "why": "日志、撤销、重做与按序恢复的用法"
+            }
+          ]
+        },
+        {
+          "id": "gui-transcript-bench",
+          "title": "转写与说话人工作台",
+          "tag": "interview",
+          "summary": "词、间隙、说话人、源剪切四层直接编辑",
+          "goal": "长访谈的编辑主战场在文字上。改文字就是改片子，四层各自的语义要分清。",
+          "inputs": [
+            "词级转写与说话人",
+            "clip 与源窗口"
+          ],
+          "outputs": [
+            "修正后的转写与变体",
+            "重新计时的 clip"
+          ],
+          "interview": "纠错、改说话人名、删口误、压缩呼吸都在这里完成，是主要交互面。",
+          "sports": "主要用解说词定位事件时间点，不做逐词精修。",
+          "atomic": [
+            {
+              "name": "词层",
+              "impl": "manage_transcript fix（wordIndex 或 find + text）",
+              "note": "只改 word.text，时间与时长不动"
+            },
+            {
+              "name": "间隙层",
+              "impl": "edit_gap list / delete / cap maxSeconds / restore",
+              "note": "间隙按 next.start − prev.end 计算，delete 后后续音频前移"
+            },
+            {
+              "name": "说话人层",
+              "impl": "manage_transcript fix from/to",
+              "note": "改名即重命名，传入已存在的标签则合并两个说话人"
+            },
+            {
+              "name": "源剪切层",
+              "impl": "delete_text / clean_script(cutPadMs 0–500)",
+              "note": "cutPad 从录音里已有的静音中借用时长，不会切进相邻的词"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "删词对视频轨没效果",
+              "detail": "delete_text 只让音频 clip 重新计时；视频 clip 从 srcInFrame 开始连续播放，删词实际上什么也没剪掉。对策：视频改用 split_item 或 edit_item 调整 srcInFrame 与 durationInFrames。",
+              "source": "OpenChatCut/src/agent/tools/schemas/transcript-tools.ts:117"
+            },
+            {
+              "title": "用旧转写推时间戳",
+              "detail": "给剪过的片子配上剪辑前的转写，时间戳会全错。对策：转写文件名必须与当前片段文件名一致，不一致就重新转写。",
+              "source": "montaj/skills/edit-session/SKILL.md:28"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/transcript-tools.ts",
+              "line": 121,
+              "why": "manage_transcript 八个动作与说话人合并语义"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/transcript-tools.ts",
+              "line": 78,
+              "why": "edit_gap 的四种间隙操作"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/clipTypes.ts",
+              "line": 217,
+              "why": "transcriptPlayOrder 与 variants 的时间不变约束"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/core/src/media/timeline-words.ts",
+              "line": 21,
+              "why": "哪些 clip 是转写目标以及链接组去重"
+            }
+          ]
+        },
+        {
+          "id": "gui-kanban",
+          "title": "生产看板与审批门",
+          "tag": "shared",
+          "summary": "只读看板展示阶段、门禁、花费与产物，全部来自磁盘",
+          "goal": "让人一眼看到生产跑到哪、卡在哪、花了多少。看板不参与编辑，避免它自己变成另一份需要维护的状态。",
+          "inputs": [
+            "checkpoint 与 history",
+            "events.jsonl 与 cost_snapshot"
+          ],
+          "outputs": [
+            "阶段轨与门禁审计",
+            "回放视图"
+          ],
+          "atomic": [
+            {
+              "name": "状态来源",
+              "impl": "project.json + pipeline_defs yaml + checkpoint_<stage>.json + history/",
+              "note": "剧本卡来自 artifacts/script.json，胶片格（分镜缩略图卡片）来自 scene_plan×script×asset_manifest 三表 join"
+            },
+            {
+              "name": "实时推送",
+              "impl": "watchfiles 监听 projects/ + SSE",
+              "note": "浏览器收到变更通知后重新拉取看板数据，整个过程没有 Agent 参与"
+            },
+            {
+              "name": "检查点策略",
+              "impl": "guided | manual_all | auto_noncreative",
+              "note": "状态 pending|in_progress|awaiting_human|completed|failed"
+            },
+            {
+              "name": "交接包检查",
+              "impl": "video-agent-producer 6 项清单",
+              "note": "配音存在且大于 30 秒、字幕非空、visual-timeline 格式正确、每个镜头有素材、命名对应、音频与分镜（脚本镜头划分）总时长偏差 ≤15%"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "gated 阶段悄悄跳过",
+              "detail": "阶段标了完成，但从未等过人审批。对策：看板做门禁审计，history 里没有 awaiting_human 且没有 human_approved 就标 gate_skipped。",
+              "source": "OpenMontage/backlot/state.py:176"
+            },
+            {
+              "title": "无检查点时直接空白",
+              "detail": "老项目或非标准项目没有 checkpoint，看板什么都不显示。对策：降级为由 watcher 找到什么显示什么，展示媒体、快照与渲染产物。",
+              "source": "OpenMontage/backlot/README.md:29"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/backlot/README.md",
+              "line": 19,
+              "why": "盘面元素与磁盘来源的映射表"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/backlot/state.py",
+              "line": 145,
+              "why": "阶段轨与门禁审计的构建逻辑"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/docs/ARCHITECTURE.md",
+              "line": 243,
+              "why": "检查点结构、状态值与三种策略"
+            },
+            {
+              "repo": "video-agent-skills",
+              "path": "video-agent-skills/video-agent-producer/SKILL.md",
+              "line": 95,
+              "why": "剪辑师启动前的交接包检查清单"
+            }
+          ]
+        },
+        {
+          "id": "gui-mcp-bridge",
+          "title": "MCP 与外部 Agent 桥",
+          "tag": "shared",
+          "summary": "外部 Agent 通过本机 MCP 操作真实工程，不自建模型",
+          "goal": "让 Codex、Claude Code 等外部客户端接管对话，同时复用编辑器自己的工具与命令，不产生第二套工程格式。",
+          "inputs": [
+            "MCP 端点与 token",
+            "目标工程 id"
+          ],
+          "outputs": [
+            "草稿提案",
+            "编辑器内的应用结果"
+          ],
+          "atomic": [
+            {
+              "name": "端点",
+              "impl": "OpenChatCut http://localhost:5199/api/external-mcp/mcp；frontstage 与 Palmier Pro http://127.0.0.1:19789/mcp",
+              "note": "均为 Streamable HTTP，默认绑本机，单机单用户"
+            },
+            {
+              "name": "鉴权",
+              "impl": "OPENCHATCUT_MCP_TOKEN + Authorization: Bearer",
+              "note": "对外暴露时必须配 token 并限制编辑器入口的网络范围"
+            },
+            {
+              "name": "工具面",
+              "impl": "frontstage 43 个工具",
+              "note": "覆盖编辑、调色、生成、转写、导出；OpenChatCut 会话只暴露可进草稿的读与编辑工具"
+            },
+            {
+              "name": "会话边界",
+              "impl": "codex-chatcut 的禁令清单",
+              "note": "不挂载编辑器 ChatPanel、不自建时间线 schema、不在聊天或工具参数里暴露 bearer 与 cookie"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "外部桥自建工程模型",
+              "detail": "外部 Agent 把上游动作翻译成自己的时间线模型，两套格式会逐渐不一致。对策：外部调用的必须是编辑器内部同一套工具与 EditorCore 命令。",
+              "source": "OpenChatCut/README_ZH.md:371"
+            },
+            {
+              "title": "用 iframe 打开本机编辑器",
+              "detail": "把 localhost 编辑器塞进 MCP Widget iframe，权限与凭据都不安全。对策：返回不含凭据的 URL，让客户端用内置浏览器打开。",
+              "source": "codex-chatcut/skills/open-chatcut/SKILL.md:22"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/README_ZH.md",
+              "line": 328,
+              "why": "MCP 端点、会话四步流程与访问保护"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/README.md",
+              "line": 58,
+              "why": "43 工具 MCP 服务器的连接配置"
+            },
+            {
+              "repo": "palmier-pro",
+              "path": "palmier-pro/README.md",
+              "line": 60,
+              "why": "另一款编辑器的 MCP 端口与安装方式"
+            },
+            {
+              "repo": "codex-chatcut",
+              "path": "codex-chatcut/skills/open-chatcut/SKILL.md",
+              "line": 33,
+              "why": "外部 Agent 桥的边界与禁令"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

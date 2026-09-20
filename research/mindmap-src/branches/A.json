@@ -1,0 +1,1485 @@
+{
+  "branches": [
+    {
+      "id": "ingest",
+      "title": "素材接入与规范化",
+      "tag": "shared",
+      "summary": "把长视频变成可寻址、可复现、可断点续跑的工程输入",
+      "goal": "长访谈和赛事原片通常是大文件：帧率不固定（VFR）、高动态范围（HDR）、带旋转标记、有多条音轨。不做预处理就直接剪，声音和画面会逐渐错位，切点可能落在错误的帧上，缓存也会失效。这一步产出探测清单（manifest）、内容哈希、统一的时间基准和各阶段的断点存档（checkpoint）。",
+      "inputs": [
+        "用户提供的原始视频/音频文件",
+        "yt-dlp 下载产物",
+        "多台相机同时拍摄的素材与外接麦克风录音"
+      ],
+      "outputs": [
+        "探测清单（probe manifest）JSON",
+        "内容哈希与规范资产映射（同一内容只存一份）",
+        "CFR（恒定帧率）规范化的中间文件与低码率代理（低分辨率草稿副本）",
+        "project 目录与各阶段的断点存档（checkpoint）"
+      ],
+      "interview": "访谈常有多台相机和外接麦克风。独立录音设备工作超过 10 分钟会出现时钟漂移，必须先校正；否则录到一小时左右，口型和声音会明显对不上。",
+      "sports": "转播源常是 50/60fps 且关键帧间隔大。降到 30fps 会让快速动作明显卡顿，必须保留高帧率并按整数帧对齐。",
+      "mg": "接入的不是拍摄原片。MG 动效（Motion Graphics，图形动画）的素材采集是 Playwright 三件套：2 倍分辨率的全页截图、每个元素单独的透明背景截图、layout.json 坐标表。",
+      "atomic": [
+        {
+          "name": "媒体探测",
+          "impl": "ffprobe → probe.py 结构化 manifest",
+          "note": "输出 fps、r/avg_frame_rate、rotation、hdr_format、bit_depth、audio_streams"
+        },
+        {
+          "name": "CFR 规范化",
+          "impl": "ffmpeg -fps_mode cfr -r <avg>",
+          "note": "只在检测到 VFR 或显式指定 fps 时才插入，避免不必要的重新编码"
+        },
+        {
+          "name": "内容寻址",
+          "impl": "SHA-256 全文件哈希",
+          "note": "内容哈希相同的文件直接复用已有资产和派生缓存；文件名相同但内容不同则直接报错"
+        },
+        {
+          "name": "代理生成",
+          "impl": "video-edit-cli proxy create --height",
+          "note": "低分辨率副本只用于快速定位与人工审阅，不参与最终渲染"
+        },
+        {
+          "name": "阶段断点存档",
+          "impl": "step_id + input_hash 的 JSON 台账",
+          "note": "input_hash 一变就失效，避免换了模型还重放旧的产物"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "容器时长不等于画面时长",
+          "detail": "format.duration 经常继承更长的音轨时长或 MP4 的播放顺序表（edit list），按它排时间线会在尾部出现黑帧。应该改用视频流自己的 duration。",
+          "source": "ClipTalk/app/media.py:184"
+        },
+        {
+          "title": "截断文件仍能被 ffprobe 读出",
+          "detail": "MP4 的元数据在文件被截断后仍然可读，ffprobe 会报告原来的时长，但后面的数据包已经不存在。需要在文件尾部开一个小窗口做多点 framehash 解码探测；整段都解不出来就拒绝导入，而不是悄悄缩短时间线。",
+          "source": "ClipTalk/app/media.py:222"
+        },
+        {
+          "title": "VFR 素材直接剪会音画错位",
+          "detail": "手机和录屏素材的 r_frame_rate 与 avg_frame_rate 不一致。不先转成 CFR 就直接剪切、拼接，声音和画面会随时间累积错位。探测到这种情况就自动加上 -fps_mode cfr。",
+          "source": "kajisho5-ffmpeg-skill/SKILL.md:191"
+        },
+        {
+          "title": "-c copy 可能切出静止首帧",
+          "detail": "不重编码的切法只能从关键帧（可独立解码的帧）开始。关键帧间隔大时，实际起点可能比指定时间早 1–10 秒：文件能播放，但开头画面是错的。偏差超过 0.5s 就必须改成重新编码。",
+          "source": "kajisho5-ffmpeg-skill/SKILL.md:177"
+        },
+        {
+          "title": "重编码悄悄丢音轨",
+          "detail": "iPhone 拍摄的 .mov 文件带有时间码（timecode）和多条音轨，脚本默认只映射第一条音频，重新编码后其余音轨会消失。要先看探测结果中的 audio_streams 再决定映射。",
+          "source": "kajisho5-ffmpeg-skill/SKILL.md:141"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "kajisho5-ffmpeg-skill",
+          "path": "kajisho5-ffmpeg-skill/scripts/_common.py",
+          "line": 282,
+          "why": "VFR 判定阈值和探测字段的真实实现"
+        },
+        {
+          "repo": "kajisho5-ffmpeg-skill",
+          "path": "kajisho5-ffmpeg-skill/SKILL.md",
+          "line": 189,
+          "why": "VFR/HDR/旋转/关键帧四类接入陷阱清单"
+        },
+        {
+          "repo": "chatmonteur",
+          "path": "chatmonteur/docs/architecture.md",
+          "line": 90,
+          "why": "raw 不可变、clips 为 CFR 中间文件的阶段表"
+        },
+        {
+          "repo": "video-edit-cli",
+          "path": "video-edit-cli/skills/video-edit-cli/references/workspace.md",
+          "line": 34,
+          "why": "workspace.json 记录 sha256 与角色的目录契约"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/media.py",
+          "line": 161,
+          "why": "probe_video 对多种 duration 来源的取舍逻辑"
+        }
+      ],
+      "children": [
+        {
+          "id": "probe-normalize",
+          "title": "媒体探测与规范化",
+          "tag": "shared",
+          "summary": "先探测再动手，把格式各异的原片统一成可预测的中间文件",
+          "goal": "不探测就开工是所有静默失败的源头。这一步把帧率、色彩、旋转、音轨等信息都写进探测清单（manifest）的字段，并且只在必要时做一次重新编码。",
+          "inputs": [
+            "原始媒体文件"
+          ],
+          "outputs": [
+            "探测清单（manifest），含 video/audio/subtitle_streams",
+            "CFR（恒定帧率）+ SDR（普通动态范围）规范化的中间文件",
+            "代理文件（proxy，低分辨率草稿副本）"
+          ],
+          "interview": "长访谈普遍是 SDR 1080p、多音轨。重点是音轨映射和设备间的时钟漂移（录音随时间逐渐错位），不是色彩。",
+          "sports": "转播源可能是 HDR（高动态范围）HLG 或 BT.2020。优先保留高帧率，色彩转换要放在流程最前面，不要等剪完再补。",
+          "atomic": [
+            {
+              "name": "probe manifest",
+              "impl": "kajisho5 probe.py / montaj probe step",
+              "note": "montaj 会额外输出 display_width/height 和 rotation，用来区分编码尺寸与显示尺寸"
+            },
+            {
+              "name": "Log 素材识别",
+              "impl": "probe.py --analyze 输出 looks_like_log",
+              "note": "Log 是相机拍的低对比度原始格式，S-Log/V-Log 常被误标成 SDR；需要先套调色查找表（.cube）再做其它处理"
+            },
+            {
+              "name": "设备同步",
+              "impl": "sync.py --fix-drift",
+              "note": "confidence < 0.3 或偏移量超过分析窗口的 60% 时，视为同步失败"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "60fps 降 30 让动作明显卡顿",
+              "detail": "把 60fps 转成 30fps 会少掉一半运动采样。人物讲话特写看不出来，但体育、游戏和无人机横摇画面会明显卡顿。平台允许就保留 60fps。",
+              "source": "kajisho5-ffmpeg-skill/SKILL.md:186"
+            },
+            {
+              "title": "HDR 走 SDR 路径颜色发灰",
+              "detail": "在 BT.2020 像素上错误地打上 BT.709 标签，会直接洗掉画面颜色。需要 zscale→linear(npl=100)→tonemap=hable:desat=0→BT.709 这条完整处理链，其中 tonemap 是把 HDR 压成 SDR 的色调映射。",
+              "source": "premiere-agent/helpers/visual_lane.py:452"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "kajisho5-ffmpeg-skill",
+              "path": "kajisho5-ffmpeg-skill/scripts/_common.py",
+              "line": 409,
+              "why": "cfr_args 只在检测到 VFR（可变帧率）时才插入 -fps_mode cfr"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/steps/media/probe.json",
+              "line": 10,
+              "why": "displaymatrix 旋转与编码尺寸分离的输出契约"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/reference.md",
+              "line": 133,
+              "why": "proxy create --height 的代理生成命令"
+            }
+          ],
+          "children": [
+            {
+              "id": "vfr-cfr",
+              "title": "VFR 转 CFR",
+              "tag": "atomic",
+              "summary": "r/avg 帧率相差超过 0.01 就判定为 VFR（可变帧率），并强制转成 CFR（恒定帧率）",
+              "goal": "VFR 素材在剪切和拼接后会与音频逐渐错位。把帧率规范化成整数或接近整数的 CFR，是后续所有帧级操作的前提。",
+              "outputs": [
+                "用 -fps_mode cfr -r <rate> 生成的中间文件"
+              ],
+              "atomic": [
+                {
+                  "name": "VFR 判定",
+                  "impl": "abs(r_frame_rate - avg_frame_rate) > 0.01",
+                  "note": "命中判定就把 variable_frame_rate_suspected 置为 True"
+                },
+                {
+                  "name": "速率取整",
+                  "impl": "abs(rate-round(rate))<0.02 时取整",
+                  "note": "掉帧导致的 23.4fps 这类非标准帧率，需要人工指定 --fps 30|60"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "VFR 素材用 copy 模式剪切不可靠",
+                  "detail": "cut.py 检测到 VFR 会自动切换到 --accurate 重新编码模式。手写 ffmpeg 命令时容易忘记这一点，结果就是片段能播放但起点是错的。",
+                  "source": "kajisho5-ffmpeg-skill/SKILL.md:193"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "kajisho5-ffmpeg-skill",
+                  "path": "kajisho5-ffmpeg-skill/scripts/_common.py",
+                  "line": 416,
+                  "why": "cfr_args 的判定与取整实现"
+                },
+                {
+                  "repo": "chatmonteur",
+                  "path": "chatmonteur/skills/production-rules.md",
+                  "line": 14,
+                  "why": "剪之前先重建 CFR 中间文件的硬规则"
+                }
+              ]
+            },
+            {
+              "id": "color-hdr",
+              "title": "HDR 与 Log 色彩",
+              "tag": "atomic",
+              "summary": "色彩转换必须排在剪辑链条最前面",
+              "goal": "HDR（高动态范围）、Dolby Vision 和 Log（相机低对比度原始格式）素材如果先剪后转，或者被打了错误的标签，颜色会不可逆地丢失。",
+              "outputs": [
+                "SDR BT.709 yuv420p 中间文件，或保留 HDR 的 HEVC Main10"
+              ],
+              "atomic": [
+                {
+                  "name": "HDR 判定",
+                  "impl": "color_transfer ∈ {smpte2084, arib-std-b67} 或 primaries=bt2020",
+                  "note": "side_data 里有 dv_profile 时，即使基础层标签缺失也算 HDR"
+                },
+                {
+                  "name": "tonemap 链",
+                  "impl": "zscale/tonemap=hable",
+                  "note": "tonemap 是把 HDR 压成 SDR 的色调映射；hable 能保住高光又不洗白暗部，比 mobius/reinhard 更适合混合内容"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "Log 素材被当成正常 SDR",
+                  "detail": "S-Log/V-Log/C-Log 素材画面发灰，但元数据标签是 SDR（普通动态范围），直接调色会造成二次压缩。要先跑 probe --analyze 看 looks_like_log 字段，再用厂商提供的调色查找表（.cube）。",
+                  "source": "kajisho5-ffmpeg-skill/SKILL.md:211"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "premiere-agent",
+                  "path": "premiere-agent/helpers/visual_lane.py",
+                  "line": 441,
+                  "why": "HDR→SDR 六段 tonemap 链的完整注释与参数"
+                },
+                {
+                  "repo": "kajisho5-ffmpeg-skill",
+                  "path": "kajisho5-ffmpeg-skill/scripts/_common.py",
+                  "line": 296,
+                  "why": "hdr_format 区分 HDR10/PQ、HLG、Dolby Vision"
+                }
+              ]
+            },
+            {
+              "id": "proxy-tracks",
+              "title": "代理文件与多音轨",
+              "tag": "shared",
+              "summary": "低码率代理（低分辨率草稿副本）供理解与审阅，原片只在最终渲染时出场",
+              "goal": "长素材反复定位（seek）和按固定间隔抽帧的代价很高。代理文件让理解阶段变快；多音轨则决定 ASR 用哪一条。",
+              "outputs": [
+                "proxies/ 下的低分辨率副本",
+                "选定的 audio-stream 索引"
+              ],
+              "interview": "先用 --audio-stream 挑领夹麦克风，而不是相机机头上的麦克风；两种来源的 ASR 词级时间戳质量差别很大。",
+              "sports": "解说音轨和现场音轨通常是分开的。解说轨用于 ASR，现场轨用于欢呼能量检测，两条都要保留。",
+              "atomic": [
+                {
+                  "name": "音轨选择",
+                  "impl": "audio.py --audio-stream N",
+                  "note": "探测结果的 audio_streams 列出多条音轨时，必须显式指定用哪一条"
+                },
+                {
+                  "name": "统一采样率",
+                  "impl": "ffmpeg -ac 1 -ar 16000 / 48000",
+                  "note": "语音识别链用 16k 单声道，CLAP 声音事件链用 48k"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "不要为转写先手动导出 WAV",
+                  "detail": "baocut 的 transcribe 自带 16kHz 单声道降混，9GB / 96 分钟的 4K 源解码只需约 34 秒。手动预先导出 WAV 只会多一份中间文件和一次质量损失。",
+                  "source": "baocut/skills/baocut/references/workflows.md:202"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "kajisho5-ffmpeg-skill",
+                  "path": "kajisho5-ffmpeg-skill/SKILL.md",
+                  "line": 141,
+                  "why": "多音轨用 --audio-stream N 选择"
+                },
+                {
+                  "repo": "premiere-agent",
+                  "path": "premiere-agent/AGENT.md",
+                  "line": 69,
+                  "why": "audio_16k/ 把 16kHz PCM 共享给语音和 CLAP 两条处理线（lane）"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "content-hash",
+          "title": "内容哈希与派生缓存",
+          "tag": "shared",
+          "summary": "用 SHA-256 做资产身份，原片不可变，派生物全部可重算",
+          "goal": "同一段访谈可能被多次导入、改名、剪出多个版本。必须用内容哈希而不是文件路径作为资产身份，才能复用代价很高的 ASR 和视觉理解结果。",
+          "inputs": [
+            "原始媒体字节流"
+          ],
+          "outputs": [
+            "sha256 → 规范资产映射（同一内容只存一份）",
+            "cache/source-evidence-<hash> 派生缓存目录"
+          ],
+          "atomic": [
+            {
+              "name": "全文件哈希",
+              "impl": "node:crypto createHash('sha256')",
+              "note": "归档路径采用 import-<sha256 前 12 位>-<原名> 的格式，天然去重"
+            },
+            {
+              "name": "重复资产合并",
+              "impl": "resolveCanonicalAsset(sourceContentHash)",
+              "note": "导入时先查已有资产，命中就复用而不是再存一份"
+            },
+            {
+              "name": "源级缓存目录",
+              "impl": "cache/source-evidence-<sha256[:32]>",
+              "note": "缓存目录刻意与查询范围和模型组合无关，换了 prompt 也不用重算"
+            },
+            {
+              "name": "近重复检测",
+              "impl": "语义向量余弦 ≥ 0.985",
+              "note": "哈希不同但画面几乎一致的素材需要另一层判定"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "同名不同内容会毁掉源记录",
+              "detail": "raw/ 目录已有同名文件时，内容逐字节相同就复用；内容不同就直接抛出 ProjectContractError，绝不覆盖。覆盖会让所有已产出的派生物指向错误的源文件。",
+              "source": "chatmonteur/chatmonteur/project.py:102"
+            },
+            {
+              "title": "按 mtime 缓存会误判",
+              "detail": "premiere-agent 的各条处理线（lane）用文件修改时间（mtime）判断是否重跑。复制或同步文件会改变 mtime，从而触发全量重算；改名却可能不改变 mtime。生产系统应以内容哈希为准，mtime 只用作快速路径。",
+              "source": "premiere-agent/AGENT.md:26"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "ai-video-editor",
+              "path": "ai-video-editor/scripts/timeline-command.mjs",
+              "line": 53,
+              "why": "导入即算 SHA-256 并用前 12 位构造归档路径"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/media/importContentIdentity.ts",
+              "line": 17,
+              "why": "按内容哈希解析规范资产（canonical asset）的导入钩子"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/evidence_store.py",
+              "line": 33,
+              "why": "证据缓存目录只按 source hash 分片"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/media/semantic-search/samplingConfig.ts",
+              "line": 34,
+              "why": "duplicateThreshold=0.985 的近重复判定"
+            }
+          ]
+        },
+        {
+          "id": "time-base",
+          "title": "统一时间基准",
+          "tag": "shared",
+          "summary": "时间线一律用整数帧号，禁止在环节之间传递未转换的浮点秒数",
+          "goal": "ASR 输出的是秒，镜头检测输出的也是秒，但时间线需要的是帧号。每层各自四舍五入会累积误差，长片尤其明显。必须约定一个以帧为单位（frame-native）的表示和唯一的转换函数。",
+          "inputs": [
+            "探测得到的 fps / time base",
+            "各理解模块的秒级时间戳"
+          ],
+          "outputs": [
+            "以帧为单位（frame-native）的 clip start/end",
+            "源时间与输出时间的换算规则（source time / output time）"
+          ],
+          "interview": "词级时间戳要保留原始浮点值做边界判断，只在写入时间线时才转成帧号，避免两次取整把词的开头切掉。",
+          "sports": "回放和直播镜头需要对齐到同一个比赛时钟，帧号之外还要额外维护一条比赛时间轴。",
+          "mg": "时长全部由 fps 派生（useVideoConfig），禁止手写魔法帧号。需要对齐音乐节拍的片子用 beatF(n) 表达，浮点秒取整只发生在最后一步。",
+          "atomic": [
+            {
+              "name": "帧原生时间线",
+              "impl": "startFrame / durationInFrames",
+              "note": "对外展示的摘要可以用秒，写回工程文件时必须用工程原本的帧值"
+            },
+            {
+              "name": "毫秒转帧",
+              "impl": "round(ms/1000*fps)",
+              "note": "全项目只允许一个实现，避免 floor 与 round 混用"
+            },
+            {
+              "name": "右开区间",
+              "impl": "duration - min(1/fps/4, 0.008)",
+              "note": "保证末帧仍落在区间内，防止多取一帧"
+            },
+            {
+              "name": "输出时间轴字幕",
+              "impl": "output_time = word.start - segment_start + segment_offset",
+              "note": "拼接后字幕不偏移的唯一正确公式"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "逐片段独立取整会累积漂移",
+              "detail": "premiere-agent 因为 OTIO 的单音轨模型，加上每个片段独立做帧对齐，音频在长时间线上越切越偏，只好整体停掉 J/L cut（声音先入或延后的剪法）和交叉溶解，全部输出 audio_lead=video_tail=transition_in=0。",
+              "source": "premiere-agent/AGENT.md:30"
+            },
+            {
+              "title": "拼接后字幕整体错位",
+              "detail": "直接用源时间写 SRT 字幕，中间段落被删掉后，所有字幕都会偏移。必须按输出时间轴重新计算偏移，这是 video-use 的硬规则之一。",
+              "source": "video-use/SKILL.md:26"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/openchatcut-plugin-basics/SKILL.md",
+              "line": 81,
+              "why": "时间线位置与时长以帧为单位（frame-native）的明确约定"
+            },
+            {
+              "repo": "frontstage",
+              "path": "frontstage/packages/core/src/media/word-cut-planner.ts",
+              "line": 10,
+              "why": "keptGapFrames 的唯一毫秒转帧实现"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/media.py",
+              "line": 56,
+              "why": "CONTENT_RENDER_FPS 与右开区间 epsilon"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/AGENT.md",
+              "line": 22,
+              "why": "输出时间轴字幕偏移公式作为 Hard Rule 1"
+            }
+          ]
+        },
+        {
+          "id": "project-state",
+          "title": "项目目录与断点恢复",
+          "tag": "shared",
+          "summary": "固定的目录语义加上 input_hash 断点存档（checkpoint），随时可续跑",
+          "goal": "长视频流水线一跑就是几十分钟。中断后必须能从最后一个完成的阶段继续，而不是全部重来；同时还要保证换参数后不会重放过期的产物。",
+          "inputs": [
+            "探测清单（manifest）",
+            "各阶段产物"
+          ],
+          "outputs": [
+            "workspace.json / PLAN.md",
+            "analysis-checkpoint.json",
+            "阶段产物目录"
+          ],
+          "atomic": [
+            {
+              "name": "目录契约",
+              "impl": "raw/ clips/ transcripts/ previews/ renders/",
+              "note": "raw 永不覆盖，previews 永远不是交付物"
+            },
+            {
+              "name": "步骤哈希",
+              "impl": "sha256(params+上游产物)[:16]",
+              "note": "is_done(step_id, input_hash) 才算命中缓存"
+            },
+            {
+              "name": "阶段恢复",
+              "impl": "decisionStage=speech_analysis / event_director",
+              "note": "中断时记录 resumeAvailable，恢复时从对应阶段读回候选结果和用量数据"
+            },
+            {
+              "name": "环境健康检查",
+              "impl": "health.py --json，缓存 7 天",
+              "note": "缓存放在项目外的 ~/.premiere-agent/，属机器级属性"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "换模型不改哈希会重放旧结果",
+              "detail": "chatmonteur 在 pipeline 里显式地把已解析参数和上游产物一起哈希，注释指出：否则换了 --model 会悄悄复用陈旧的输出。缓存键必须包含模型标识和算法版本。",
+              "source": "chatmonteur/chatmonteur/core/pipeline.py:106"
+            },
+            {
+              "title": "会话产物写进 skill 目录",
+              "detail": "video-use 和 premiere-agent 都把“所有产物写到 <videos_dir>/edit/，绝不写进项目目录”列为硬规则。混写会让多个项目互相污染缓存。",
+              "source": "video-use/SKILL.md:33"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/chatmonteur/core/checkpoint.py",
+              "line": 57,
+              "why": "hash_inputs 的稳定步骤哈希实现"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 64,
+              "why": "analysis-checkpoint.json 的读写与恢复入口"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/skills/video-edit-cli/references/workspace.md",
+              "line": 30,
+              "why": "workspace init 生成的七个产物目录及规则"
+            },
+            {
+              "repo": "chatmonteur",
+              "path": "chatmonteur/docs/architecture.md",
+              "line": 107,
+              "why": "每个目录的严格语义定义"
+            }
+          ]
+        },
+        {
+          "id": "sharding",
+          "title": "长素材分片与并行",
+          "tag": "shared",
+          "summary": "按镜头/范围切片跑，并行度由显存和算法复杂度决定",
+          "goal": "两小时的素材一次性喂给任何模型都会爆。需要按范围切分、按处理线（lane）调度，并识别那些天生不能跑整片的算法。",
+          "inputs": [
+            "规范化后的中间文件",
+            "镜头边界"
+          ],
+          "outputs": [
+            "范围受限的分析任务",
+            "lane 调度计划"
+          ],
+          "interview": "转写可以整片跑，但要限制跨窗口的上下文；auto-editor 这类静音检测必须按场景分片。",
+          "sports": "赛事可按节次/回合切片，天然对齐比赛结构，也便于失败后只重跑一节。",
+          "atomic": [
+            {
+              "name": "范围限定分析",
+              "impl": "scope_start / scope_end 参数",
+              "note": "抽帧（按固定间隔取画面帧）、CLAP 索引都只在指定区间内取样"
+            },
+            {
+              "name": "显存分档调度",
+              "impl": "pick_schedule 8/4/2 GB 阈值",
+              "note": "PARALLEL_3 档需要 8GB 以上显存，低于 2GB 就落回 CPU 处理"
+            },
+            {
+              "name": "流式抽帧",
+              "impl": "ffmpeg rawvideo 直出 stdout",
+              "note": "3 小时素材按 1fps 抽帧约 10800 帧，逐帧写盘成 PNG 纯属浪费"
+            },
+            {
+              "name": "单飞任务调度",
+              "impl": "SingleFlightAssetScheduler，失败冷却 10s",
+              "note": "同一资产同时只跑一个后台构建"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "单卡多进程并行反而更慢",
+              "detail": "在 32GB RTX 5090 上，即使显存充裕，多进程 CUDA 仍会在前向推理中途 OOM（显存耗尽）。premiere-agent 因此把默认调度改回 SEQUENTIAL，并行只留给显式指定的 --force-schedule。",
+              "source": "premiere-agent/helpers/vram.py:179"
+            },
+            {
+              "title": "静音检测是 O(n²)",
+              "detail": "auto-editor 的复杂度随片长呈平方增长。chatmonteur 要求按场景/片段来跑，绝不能对合并后的一小时文件直接跑，也不要解析它的输出再做二次切分。",
+              "source": "chatmonteur/skills/production-rules.md:23"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/vram.py",
+              "line": 171,
+              "why": "三档显存阈值与各模型真实占用"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/visual_lane.py",
+              "line": 11,
+              "why": "3 小时 1fps ≈ 10800 帧的抽帧预算说明"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/recognition_pipeline.py",
+              "line": 105,
+              "why": "CLAP 索引按 scope 区间抽取 PCM"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/asset_scheduler.py",
+              "line": 9,
+              "why": "按资产身份单飞执行、带失败冷却的后台调度器"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "understand",
+      "title": "原视频理解与证据时间轴",
+      "tag": "shared",
+      "summary": "把长视频压成 LLM 可读、可下钻的多模态证据时间轴",
+      "goal": "LLM 不可能看完两小时的全部画面帧。必须把语音、视觉、声音、人物这些信息压成一条按时间交错、token 量可控的时间轴，并保留按需下钻到词级和帧级细节的能力。",
+      "inputs": [
+        "接入阶段的探测清单（manifest）与 CFR（恒定帧率）中间文件",
+        "内容哈希（决定缓存命中）"
+      ],
+      "outputs": [
+        "词级转写（transcript）JSON",
+        "打包（packed）/ 合并（merged）的时间轴 Markdown",
+        "镜头表与视觉描述（caption）",
+        "声音事件与能量曲线",
+        "多模态向量索引"
+      ],
+      "interview": "语音是主轴，视觉只在有歧义的地方介入。必须保住问答配对、指代上下文和完整的句子。",
+      "sports": "视觉与声音是主轴，解说是补充。需要动作、欢呼、哨声、比分变化多路召回。",
+      "mg": "MG 动效没有理解层。只有把图形叠加到已有画面时，才运行 open-edit 的可选（opt-in）视觉分析，取 negSpaceRect 来决定文字块的位置。",
+      "atomic": [
+        {
+          "name": "词级 ASR",
+          "impl": "Parakeet TDT 0.6B ONNX / SenseVoiceSmall / MOSS / whisper.cpp",
+          "note": "必须保留每个词的 start/end 和原始口误，禁止压缩成句级的 SRT 字幕"
+        },
+        {
+          "name": "镜头切分",
+          "impl": "TransNetV2 / ffmpeg select=gt(scene,th)",
+          "note": "TransNetV2 输入 27x48x3，阈值 0.5；ffmpeg 阈值 0.25–0.3"
+        },
+        {
+          "name": "视觉描述",
+          "impl": "Florence-2-base <MORE_DETAILED_CAPTION> / VLM",
+          "note": "默认 1fps，768x768 方形裁剪"
+        },
+        {
+          "name": "声音事件",
+          "impl": "CLAP 零样本打分",
+          "note": "10s 窗口、5s 步长，阈值 0.10，每个窗口取 top-5"
+        },
+        {
+          "name": "多模态检索",
+          "impl": "SigLIP2 / Chinese-CLIP / CLIP ViT-B-32",
+          "note": "帧向量按需池化（多帧合并成一个向量）成 clip 向量，池化会丢失时序细节"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "Whisper 在静音段会产生幻觉",
+          "detail": "premiere-agent 明确不接入 Whisper：它会在静音处编造词，而且长音频的词级时间戳有内存回退问题。montaj 的缓解办法是用 whisper.cpp -mc 0 关掉跨窗口上下文，专治长音频的重复循环。",
+          "source": "premiere-agent/AGENT.md:86"
+        },
+        {
+          "title": "音频峰值不等于事件",
+          "detail": "掌声、能量峰值只能作为召回信号，必须由语义层确认。ClipTalk 把波形和画面变化产生的候选统一标成 semantic_status=recall_only，boundary_confidence 只有 0.35–0.4。",
+          "source": "ClipTalk/app/pipeline.py:640"
+        },
+        {
+          "title": "CLAP 标签会系统性误判",
+          "detail": "音乐会被标成语音，锤子声会被标成鼓，室内底噪会被标成掌声；词表越小、越泛化，误判越严重。规则是：永不单凭 CLAP 标签下刀，与视觉证据冲突时以视觉为准。",
+          "source": "premiere-agent/AGENT.md:252"
+        },
+        {
+          "title": "只读一半时间轴会产生静默的坏切点",
+          "detail": "merged_timeline 已经做过去重压缩，剩下的每一行都是新信号。抽样读、用 grep 挑着读、中途放弃，都会让切点落在未读区间，而且表面上看不出错。premiere-agent 把它列为最高级别的硬规则。",
+          "source": "premiere-agent/AGENT.md:32"
+        },
+        {
+          "title": "帧采样会限制边界精度",
+          "detail": "模型给出的边界最多只能精确到一个采样步长。ClipTalk 允许模型给出的边界与最近可见帧相差一个采样步；超出这个范围就退回粗筛时的宽范围，避免假装拥有亚秒级精度。",
+          "source": "ClipTalk/app/pipeline.py:458"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "video-use",
+          "path": "video-use/SKILL.md",
+          "line": 112,
+          "why": "packed transcript 作为 LLM 主阅读面的定义"
+        },
+        {
+          "repo": "premiere-agent",
+          "path": "premiere-agent/AGENT.md",
+          "line": 144,
+          "why": "三条处理线（lane）合并成 merged_timeline 的打包规则"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/pipeline.py",
+          "line": 126,
+          "why": "按时长分档的 VLM 帧预算函数"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+          "line": 5,
+          "why": "overview→candidate→verification 三遍分层扫描"
+        },
+        {
+          "repo": "ClipTalk",
+          "path": "ClipTalk/app/recognition_pipeline.py",
+          "line": 182,
+          "why": "镜头感知抽帧与多模态取样调度入口"
+        }
+      ],
+      "children": [
+        {
+          "id": "asr-words",
+          "title": "词级 ASR 与紧凑转写",
+          "tag": "shared",
+          "summary": "词级时间戳做真值，短语级 Markdown 做阅读面",
+          "goal": "剪辑精度取决于词边界，阅读成本取决于 token 数量。两者必须分离：JSON 文件保存词级真值，Markdown 只给 LLM 阅读。",
+          "inputs": [
+            "16kHz 单声道 PCM"
+          ],
+          "outputs": [
+            "transcripts/<name>.json 词级真值",
+            "takes_packed.md / speech_timeline.md"
+          ],
+          "interview": "口误、重复、uh/um 这类语气词必须原样保留，它们是寻找剪切点的信号，不能做文本归一化。",
+          "sports": "解说密度低且噪声大。转写主要用于事件命名与球员姓名，不能当作唯一切点依据。",
+          "mg": "字卡文案来自脚本，时序来自 TTS 配音的实测时长。只有用户自带录音（user-audio 模式）时，才需要词级转写。",
+          "atomic": [
+            {
+              "name": "本地词级 ASR",
+              "impl": "Parakeet TDT 0.6B ONNX（英文 v2 / 多语 v3 自动路由）",
+              "note": "fp16 单会话约 1.6GB，4 会话池约 6.4GB"
+            },
+            {
+              "name": "中文优先 ASR",
+              "impl": "iic/SenseVoiceSmall + fsmn-vad",
+              "note": "自带标点；v2 算法把 max_single_segment_time 从 30000ms 收到 3000ms"
+            },
+            {
+              "name": "短语打包",
+              "impl": "pack_transcripts.py --silence-threshold 0.5",
+              "note": "静音 ≥0.5s 或切换说话人时断句，token 量约为原始 JSON 的十分之一"
+            },
+            {
+              "name": "词边界查询",
+              "impl": "find_quote.py --range M:SS-M:SS --quote",
+              "note": "返回 first/last/prev/next word 与 cut_window，支持 --batch 一次查 N 条"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "禁止直接 grep 词级 JSON",
+              "detail": "premiere-agent 规定所有 EDL（剪辑决策清单）锚点必须走 find_quote.py：它比手工解析快 50–100 倍，会用整数范围做边界校验，并消灭了整类 off-by-one 缺陷。",
+              "source": "premiere-agent/AGENT.md:23"
+            },
+            {
+              "title": "静音阈值低于 250ms 会打碎句子",
+              "detail": "流利连读时，词与词之间的发音间隙本来就有 30–200ms。阈值低于 250ms 会把一句话切成五个单词片段，留下五道能听出来的接缝。这是感知上的硬底线。",
+              "source": "premiere-agent/AGENT.md:197"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-use",
+              "path": "video-use/helpers/pack_transcripts.py",
+              "line": 40,
+              "why": "按静音 0.5s 分短语的打包实现"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/AGENT.md",
+              "line": 189,
+              "why": "五档节奏预设（pacing preset）的四个真实毫秒数"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/config.py",
+              "line": 202,
+              "why": "SenseVoiceSmall + fsmn-vad + cam++ 的默认模型配置"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/steps/speech/transcribe.json",
+              "line": 27,
+              "why": "-mc 0 关闭跨窗口上下文，修复长音频重复幻觉"
+            },
+            {
+              "repo": "video-edit-cli",
+              "path": "video-edit-cli/docs/concepts.md",
+              "line": 147,
+              "why": "transcript create 为真值、pack 为派生视图的分工"
+            }
+          ]
+        },
+        {
+          "id": "speaker",
+          "title": "说话人与问答轮次",
+          "tag": "interview",
+          "summary": "说话人分离（diarization）加声纹识别，把每个词归到人，再把问答配成对",
+          "goal": "访谈集锦最常见的失败是只留回答、丢掉问题。必须先有稳定的说话人标签，才能做问答配对与打断处理。",
+          "inputs": [
+            "词级转写（transcript）",
+            "16kHz WAV"
+          ],
+          "outputs": [
+            "每个 word 的 speaker_id",
+            "声纹档案（profile）与置信度",
+            "问答轮次结构"
+          ],
+          "interview": "两到三人对谈时，互相抢话和碎片化的归属是主要问题。需要一轮基于语义和语法的说话人（speaker）修复。",
+          "sports": "解说加嘉宾，说话人价值低于事件本体，可以只做粗粒度分离。",
+          "atomic": [
+            {
+              "name": "diarization",
+              "impl": "pyannote/speaker-diarization-3.1",
+              "note": "按最大重叠比例把发言回合（turn）分给每个词；给定 num_speakers 会跳过聚类，抑制说话人在 1 人和 2 人之间震荡"
+            },
+            {
+              "name": "轻量 diarization",
+              "impl": "Pyannote 分割 5.7MB + WeSpeaker 声纹 26.5MB",
+              "note": "两个模型共约 32MB，--speakers N 作为声纹簇数量的上限"
+            },
+            {
+              "name": "声纹检索",
+              "impl": "iic/speech_campplus_sv_zh-cn_16k-common",
+              "note": "accept 阈值 0.38，review 阈值 0.31，次优候选的间距阈值 0.05"
+            },
+            {
+              "name": "说话人修复",
+              "impl": "speaker-repair 任务，逐词编号窗口",
+              "note": "只允许合并碎片或小幅移动边界；重标超过 12 个词或 2.5s 的修改会被引擎直接忽略"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "碎片被误判成新说话人",
+              "detail": "说话人分离会把“的/了/吗”这种补足邻句的碎片单独切成一轮。baocut 的做法是先按语义和语法判断再看时间，并硬性限制修复不得增加轮次数量。",
+              "source": "baocut/skills/baocut/references/agent-tasks.md:619"
+            },
+            {
+              "title": "声纹合并阈值要显式调",
+              "detail": "ClipTalk 把 CAM++ 聚类后端的 merge_thr 显式设为 0.82，而不是用默认值，并把 VAD（语音活动检测）边界作为聚类切分的依据；否则同一个人会被拆成多个标签。",
+              "source": "ClipTalk/app/speech.py:207"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/diarize.py",
+              "line": 89,
+              "why": "按最大重叠给每个词打 speaker_id"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/voiceprint.py",
+              "line": 21,
+              "why": "声纹模型与三档判定阈值"
+            },
+            {
+              "repo": "baocut",
+              "path": "baocut/skills/baocut/references/workflows.md",
+              "line": 213,
+              "why": "MOSS 自带说话人分离，Qwen/Whisper 需要外挂 diarization 包"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+              "line": 11,
+              "why": "访谈要求保留问题、答案依赖问题时不得单独切出"
+            }
+          ]
+        },
+        {
+          "id": "shot-visual",
+          "title": "镜头切分与视觉语义",
+          "tag": "shared",
+          "summary": "先切镜头，再在镜头内按预算抽帧（按固定间隔取画面帧）做描述、质量分与 OCR",
+          "goal": "镜头是视觉索引的最小单位。均匀抽帧会漏掉短镜头，又在长镜头里浪费预算；按镜头感知来抽帧，能用更少的帧覆盖更多内容。",
+          "inputs": [
+            "CFR（恒定帧率）中间文件或代理（低分辨率草稿副本）"
+          ],
+          "outputs": [
+            "shots[] 含 start/end/keyframeTimes",
+            "每帧的画面描述（caption）与美学分",
+            "OCR 文本单元"
+          ],
+          "interview": "访谈画面变化少，1fps 甚至 0.5fps 就足够。重点是识别补充画面（B-roll，空镜和资料镜头）和检查镜头连续性。",
+          "sports": "转播切镜频繁而且镜头短。镜头检测的阈值要更灵敏，慢放和特写要能与直播镜头区分开。",
+          "atomic": [
+            {
+              "name": "学习式镜头切分",
+              "impl": "TransNetV2，25fps 采样，阈值 0.5",
+              "note": "最短镜头 1000ms，最长 30000ms 强制再切"
+            },
+            {
+              "name": "纯 ffmpeg 切分",
+              "impl": "select='gt(scene,0.25)',showinfo",
+              "note": "无模型依赖，montaj 默认 0.25、最短镜头 0.4s；ClipTalk 阈值夹在 0.1–0.9"
+            },
+            {
+              "name": "镜头内抽帧",
+              "impl": "shot_sample_times(maximum_per_shot=6, global_limit=1200)",
+              "note": "每镜头取首/中/尾三帧，长镜头每 8 秒补一帧，首尾帧为必选"
+            },
+            {
+              "name": "帧预算分档",
+              "impl": "coarse_frame_limit",
+              "note": "≤10min 取 48–72 帧，30min 96，1h 120，2h 150，更长 180"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "1fps 描述会淹没时间轴",
+              "detail": "Florence-2 每秒输出 5–7 句描述，按 1fps 跑三小时就是一万条。对话式或静态内容应降到 0.5fps 或 0.25fps，成本随 fps 线性增长。",
+              "source": "premiere-agent/helpers/visual_lane.py:95"
+            },
+            {
+              "title": "默认过滤规则会保留 80% 素材",
+              "detail": "FireRed 的 filter 提示词强制保留超过 80% 的 clip，这只是“去掉明显废片”，不是为脚本的节拍点（beat）做竞争性选片。直接复用会让集锦毫无取舍。",
+              "source": "FireRed-OpenStoryline/prompts/tasks/filter_clips/zh/system.md"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "FireRed-OpenStoryline",
+              "path": "FireRed-OpenStoryline/src/open_storyline/nodes/core_nodes/split_shots.py",
+              "line": 35,
+              "why": "TransNetV2 采样率、阈值与镜头时长约束"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/recognition.py",
+              "line": 135,
+              "why": "镜头感知抽帧的每镜头与全局上限"
+            },
+            {
+              "repo": "montaj",
+              "path": "montaj/steps/media/detect_shots.json",
+              "line": 14,
+              "why": "纯 ffmpeg 镜头检测的阈值与最短镜头默认值"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 126,
+              "why": "按时长分五档的粗筛帧预算"
+            }
+          ],
+          "children": [
+            {
+              "id": "vlm-caption",
+              "title": "VLM 描述与质量分",
+              "tag": "shared",
+              "summary": "客观描述加美学分和技术分，描述长度必须设上限",
+              "goal": "画面描述（caption）既要足够具体、能支撑选片，又不能长到撑爆 token。同时还需要一个与内容无关的画质分，用来淘汰废片。",
+              "outputs": [
+                "clip_captions[].caption",
+                "美学分（aesthetic score）"
+              ],
+              "atomic": [
+                {
+                  "name": "本地 caption",
+                  "impl": "Florence-2-base, <MORE_DETAILED_CAPTION>, batch 8",
+                  "note": "768x768 方形中心裁剪，lanczos 缩放，rgb24 流式输入"
+                },
+                {
+                  "name": "云端 clip 理解",
+                  "impl": "VLM 逐 clip，sample_fps=2.0, max_frames=64",
+                  "note": "max_frames 是防止长视频撑爆 token 的兜底限制"
+                },
+                {
+                  "name": "描述压缩",
+                  "impl": "caveman_compress.py（spaCy 去虚词）",
+                  "note": "token 量下降 55–60%，实体、动作、颜色、构图信息全部保留"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "静态画面产生大量重复描述",
+                  "detail": "逐帧生成的描述在静止镜头上几乎逐字重复。打包（pack）时做句级模糊增量去重：相似度 ≥0.80 视为已经见过，静态帧折叠成 (same)，缓慢变化的帧只输出新增的句子。",
+                  "source": "premiere-agent/helpers/pack_timelines.py:366"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "premiere-agent",
+                  "path": "premiere-agent/helpers/visual_lane.py",
+                  "line": 98,
+                  "why": "默认 fps、batch size 与 Florence 输入尺寸常量"
+                },
+                {
+                  "repo": "FireRed-OpenStoryline",
+                  "path": "FireRed-OpenStoryline/config.toml",
+                  "line": 68,
+                  "why": "sample_fps=2.0 与 max_frames=64 的抽帧上限"
+                }
+              ]
+            },
+            {
+              "id": "ocr-text",
+              "title": "画面文字 OCR",
+              "tag": "shared",
+              "summary": "屏幕文字、字幕条、比分牌的时序文本",
+              "goal": "OCR 是唯一能读出比分、球员号码、PPT 标题的通道，但代价很高，必须按配置档（profile）降低采样频率。",
+              "outputs": [
+                "ocrUnits[]（含时间与文本）"
+              ],
+              "interview": "用于读 PPT 和画面下方三分之一处的人名条，1fps 足够。",
+              "sports": "比分牌需要更密的采样和时序平滑，单帧 OCR 的抖动会导致比分反复跳变。",
+              "atomic": [
+                {
+                  "name": "OCR 引擎",
+                  "impl": "PaddleOCR PP-OCRv6",
+                  "note": "缺包时降级并记入 degradedReasons，不阻塞整条流水线"
+                },
+                {
+                  "name": "采样分档",
+                  "impl": "full 档 0.5s、balanced 档 1.0s",
+                  "note": "balanced 档还会把总帧数压到 300 帧以内"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "全片 2FPS OCR 代价过高",
+                  "detail": "ClipTalk 的注释直言：普通内容检索跑不起 2FPS 的全片 OCR。CPU/balanced 档降到 1FPS 并封顶 300 帧，覆盖模式标为 adaptive_sampled，以便下游知道证据密度。",
+                  "source": "ClipTalk/app/recognition_pipeline.py:210"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/recognition_pipeline.py",
+                  "line": 297,
+                  "why": "ocrSampling 的间隔与覆盖模式字段"
+                },
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/recognition_models.py",
+                  "line": 187,
+                  "why": "PP-OCRv6 的模型键与缓存目录"
+                }
+              ]
+            },
+            {
+              "id": "person-geometry",
+              "title": "人脸主体与安全区",
+              "tag": "shared",
+              "summary": "人脸框（bbox）、跟踪与留白区域（negative space），供裁切和字幕避让",
+              "goal": "竖屏重新构图和字幕摆放，都需要知道人在画面的什么位置、哪块区域是空的。这层几何信息必须按时间段聚合，而不是逐帧计算。",
+              "inputs": [
+                "镜头表",
+                "密集抽帧（按固定间隔取画面帧）"
+              ],
+              "outputs": [
+                "personTracks / persons",
+                "每段的安全区（safe zone）与人物方位（person side）"
+              ],
+              "interview": "同一人跨镜头需要重识别，用于按人物出集锦。",
+              "sports": "主体是运动员且移动快，跟踪比身份更重要，裁切要跟随主体。",
+              "mg": "纯生成画面不需要这层。只有给人物讲话特写（talking-head）叠加图形时，才需要 subjectBbox/faceBbox，它们来自 analysis.json 而不是逐帧跟踪。",
+              "atomic": [
+                {
+                  "name": "人脸检测识别",
+                  "impl": "YuNet 2023mar + SFace 2021dec ONNX",
+                  "note": "身份相似度 0.42，人脸匹配 0.58，冲突判定 0.50"
+                },
+                {
+                  "name": "密集采样",
+                  "impl": "dense_person_sample_times interval=0.25s（v2）/0.5s",
+                  "note": "人物召回要求连续覆盖，不能沿用稀疏关键帧预算"
+                },
+                {
+                  "name": "轨迹桥接",
+                  "impl": "跨镜头 gap ≤1.1s 且相似度 ≥0.72 才连",
+                  "note": "跨切点时相似度阈值再加 0.1，防止误合并"
+                },
+                {
+                  "name": "安全区计算",
+                  "impl": "MediaPipe 人像分割 + 人脸检测",
+                  "note": "底部固定预留 0.16 高度给字幕；主体中心 <0.4 判左、>0.6 判右"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "SFace 通用阈值太宽松",
+                  "detail": "在经过压缩的访谈特写素材上，两个不同男性的余弦相似度能达到 0.461，而同一个人的重复观测在 0.661 以上。ClipTalk 因此把人脸匹配阈值定在 0.58，而不是官方推荐值。",
+                  "source": "ClipTalk/app/recognition.py:30"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/recognition.py",
+                  "line": 23,
+                  "why": "人物轨迹与身份的六个真实阈值"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/geometry/visual-geometry.ts",
+                  "line": 24,
+                  "why": "字幕预留带 0.16 与主体左右判定"
+                }
+              ]
+            },
+            {
+              "id": "shot-quality",
+              "title": "技术质量与废片过滤",
+              "tag": "shared",
+              "summary": "黑场、画面卡死、遮挡、失焦的片段先淘汰，再谈语义",
+              "goal": "技术不合格的片段无论语义多好都不能用。这个判定廉价且确定，应该排在昂贵的语义判断之前。",
+              "outputs": [
+                "technicalQuality 分数",
+                "拒绝标记（rejection flags）"
+              ],
+              "atomic": [
+                {
+                  "name": "画面变化强度",
+                  "impl": "相邻采样帧灰度差（96x54 双线性）",
+                  "note": "取 72 分位数作为阈值，同时用作变化热点的召回信号"
+                },
+                {
+                  "name": "感知哈希",
+                  "impl": "8x8 灰度均值哈希",
+                  "note": "用于候选去重与重复镜头识别"
+                },
+                {
+                  "name": "质量硬门",
+                  "impl": "livestream-to-clips hard gates",
+                  "note": "关键时刻出现严重黑场、画面卡死或遮挡，或者音频听不懂、被截断，直接拒绝"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "技术分权重不能太高",
+                  "detail": "在 ClipTalk 各内容类型的评分表中，technicalQuality 只占 0.03–0.10。它是过滤器而不是排序项，权重给高了会把平淡但干净的镜头排到金句前面。",
+                  "source": "ClipTalk/app/evidence_graph.py:15"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "ClipTalk",
+                  "path": "ClipTalk/app/pipeline.py",
+                  "line": 602,
+                  "why": "画面变化热点的分位阈值与去重间隔"
+                },
+                {
+                  "repo": "OpenChatCut",
+                  "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+                  "line": 48,
+                  "why": "排序前的八条硬性拒绝门"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "audio-events",
+          "title": "声音事件与能量情绪",
+          "tag": "shared",
+          "summary": "零样本声音事件检测（词表随项目定制），再加能量曲线",
+          "goal": "掌声、笑声、哨声、撞击声这些非语音信号，是发现高光时刻的重要线索，但通用的 527 类分类法在具体项目上很钝。做法是：先读语音和视觉时间轴，再为这个项目专门写一份词表。",
+          "inputs": [
+            "48kHz 或 16kHz PCM",
+            "已有的语音与视觉时间轴"
+          ],
+          "outputs": [
+            "audio_tags/<name>.json（label, score）",
+            "RMS 能量曲线与静音区间",
+            "情绪标签"
+          ],
+          "interview": "笑声、叹气、掌声标记的是节奏点。规则是把片段延长到反应结束，笑声本身就是那个节拍点（beat）。",
+          "sports": "欢呼、哨声、击球声是事件召回的主力信号，但必须与画面交叉确认；它们单独出现时，常常是回放或场边噪声。",
+          "atomic": [
+            {
+              "name": "零样本声音事件",
+              "impl": "CLAP（Xenova/clap-htsat-unfused ONNX）",
+              "note": "10s 窗口、5s 步长（HTSAT 的原生感受野），阈值 0.10，每个窗口取 top-5"
+            },
+            {
+              "name": "项目词表",
+              "impl": "agent 手写 audio_vocab.txt，200–1000 条",
+              "note": "词表必须包含负样本，否则静音和无关声音会全部被归到得分最高的标签上"
+            },
+            {
+              "name": "声音语义索引",
+              "impl": "CLAP 编码 48kHz，5s 窗 2.5s 跳",
+              "note": "用于按自然语言检索声音片段，与事件打分是两个用途"
+            },
+            {
+              "name": "能量热点召回",
+              "impl": "RMS 峰值 ≥ max(0.018, 中位数×2.2)",
+              "note": "热点间距至少 5s，窗口取中心 ±3.5s，最短保留 2.5s"
+            },
+            {
+              "name": "情绪与事件标签",
+              "impl": "SenseVoice 自带情绪与音频事件",
+              "note": "与转写同一次推理产出，不额外加模型"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "词表太小会让标签互相污染",
+              "detail": "CLAP 给出的是相对打分，没有负样本时，静音窗口也会被强行分到某个标签，而且分数不低。premiere-agent 要求词表在覆盖真实内容之外，再加一批不相关的词。",
+              "source": "premiere-agent/AGENT.md:149"
+            },
+            {
+              "title": "重叠窗会把持续声音重复计数",
+              "detail": "10s 窗口、5s 步长意味着相邻两个窗口共享一半音频。打包时必须合并标签相同的连续窗口，否则一段持续的掌声会变成十几个独立事件。",
+              "source": "premiere-agent/helpers/audio_lane.py:192"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/audio_lane.py",
+              "line": 166,
+              "why": "CLAP 窗长、跳距、阈值与 top_k 的默认值"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/recognition_pipeline.py",
+              "line": 112,
+              "why": "48kHz、5s 窗 2.5s 跳的声音语义索引参数"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/pipeline.py",
+              "line": 640,
+              "why": "波形能量热点召回的阈值与窗口"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/SKILL.md",
+              "line": 107,
+              "why": "把 (laughs)/(applause) 当作节拍点（beat），并把片段延长到反应结束"
+            }
+          ]
+        },
+        {
+          "id": "mm-index",
+          "title": "多模态向量索引",
+          "tag": "shared",
+          "summary": "帧级向量还是 clip 级向量：池化省下的成本会以精度损失还回来",
+          "goal": "语义检索是缩小候选集的关键。但把多帧池化（合并成一个向量）会丢掉镜头内的变化，长镜头尤其严重。需要显式选择向量粒度。",
+          "inputs": [
+            "抽样帧",
+            "文本查询"
+          ],
+          "outputs": [
+            "embeddings.npy (N, 512)",
+            "clip_id → 向量行号索引"
+          ],
+          "interview": "中文素材优先 Chinese-CLIP，检索目标多是人和场景，clip 级向量够用。",
+          "sports": "动作发生在几帧之内。clip 级池化会把进球和普通传球压成几乎相同的向量，必须保留帧级向量。",
+          "atomic": [
+            {
+              "name": "视觉编码器",
+              "impl": "SigLIP2-base-patch16-224 / Chinese-CLIP ViT-B-16 / CLIP ViT-B-32",
+              "note": "浏览器端用 q4 量化版本；服务端用 fp32 批 16"
+            },
+            {
+              "name": "时序池化",
+              "impl": "帧向量均值后重新 L2 归一",
+              "note": "OpenMontage 每个视频只取 5 张等距缩略图再池化成一个 512 维向量"
+            },
+            {
+              "name": "检索预算",
+              "impl": "resultLimit 24, relativeFloor 0.85",
+              "note": "低于最佳分数 85% 的结果直接丢弃，避免长尾噪声"
+            },
+            {
+              "name": "结果去重",
+              "impl": "MMR 式 diversify，位置项归一到 [0,1]",
+              "note": "用绝对下标做位置惩罚，惩罚项会随候选池增大而淹没相似度项"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "均匀间隔采样漏掉短事件",
+              "detail": "OpenChatCut 的回退模式每 15 秒才采一帧，而且最多 12 帧；只有时长 ≥60s 才尝试镜头感知采样（上限 96 帧）。用回退模式索引长视频，等于放弃大部分内容。",
+              "source": "OpenChatCut/src/media/semantic-search/samplingConfig.ts:29"
+            },
+            {
+              "title": "五帧池化对长镜头失真",
+              "detail": "一个 5 分钟的长镜头和一个 3 秒的空镜，同样被压成一个 512 维向量。检索时，长镜头永远是一个“平均值”，具体动作检索不到。向量粒度必须随镜头时长自适应。",
+              "source": "OpenMontage/lib/clip_embedder.py:138"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/lib/clip_embedder.py",
+              "line": 138,
+              "why": "多帧均值池化后重新归一的实现"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/lib/corpus.py",
+              "line": 13,
+              "why": "每个视频 5 张等距缩略图的语料结构"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/media/semantic-search/samplingConfig.ts",
+              "line": 29,
+              "why": "采样间隔、帧数上限与相对分数下限"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/recognition_models.py",
+              "line": 36,
+              "why": "SigLIP 编码器的批量图像编码实现"
+            }
+          ]
+        },
+        {
+          "id": "evidence-timeline",
+          "title": "合并证据时间轴",
+          "tag": "shared",
+          "summary": "三条处理线（lane）按时间戳交错压缩成一份可以整读的时间轴",
+          "goal": "分开读三个文件会丢掉跨模态的同时性。合并后的视图让一次通读就能拿到经过多路印证的画面，只在含糊的地方才下钻到单模态文件。",
+          "inputs": [
+            "语音（speech）/ 视觉（visual）/ 声音（audio）三条 lane 的缓存"
+          ],
+          "outputs": [
+            "merged_timeline.md（默认阅读面）",
+            "三份单 lane 的下钻（drill-down）文件"
+          ],
+          "interview": "语音是脊柱，视觉用来确认镜头连续性和补充画面（B-roll），声音事件的优先级最低。",
+          "sports": "视觉与声音优先，语音降为补充。需要额外一层事件层而不是单纯按时间铺开。",
+          "atomic": [
+            {
+              "name": "按时间交错",
+              "impl": "pack_timelines.py 合并三 lane",
+              "note": "典型项目 200KB–1.5MB，设计目标是能一次读完"
+            },
+            {
+              "name": "整秒对齐",
+              "impl": "合并视图时间取整到秒",
+              "note": "整数秒范围只是浏览窗口，不是切点；切点必须回到词级 JSON 里取"
+            },
+            {
+              "name": "自动稀释",
+              "impl": "视觉密集时每隔一条 caption 输出",
+              "note": "文件顶部的横幅会显式声明已做稀释，提醒读者去单 lane 文件查完整密度"
+            },
+            {
+              "name": "分层扫描",
+              "impl": "overview → candidate → verification",
+              "note": "只在 top 候选周围调取密集证据，避免全片高密度分析"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "中途压缩上下文等于半读",
+              "detail": "读到一半触发 auto-compact（上下文自动压缩），会把已读的逐行时间戳变成摘要，效果与抽样读相同。正确做法是停下来，告诉用户文件大小和剩余预算，而不是自行压缩。",
+              "source": "premiere-agent/AGENT.md:32"
+            },
+            {
+              "title": "窗口太小会丢因果",
+              "detail": "窗口过大会丢失中段内容和结构精度，过小则会丢失主题与因果上下文。分层扫描的意义就在于：用小窗口保证精度，用概览笔记保住因果，并把时间戳一路带到后面的每一遍。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md:13"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/AGENT.md",
+              "line": 10,
+              "why": "merged_timeline 作为默认阅读面、单 lane 作下钻的分工"
+            },
+            {
+              "repo": "premiere-agent",
+              "path": "premiere-agent/helpers/pack_timelines.py",
+              "line": 303,
+              "why": "句级模糊增量去重的动机与阈值说明"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/README.md",
+              "line": 79,
+              "why": "Layer1 转写常驻、Layer2 视觉按需的两层读法"
+            },
+            {
+              "repo": "video-use",
+              "path": "video-use/helpers/timeline_view.py",
+              "line": 1,
+              "why": "filmstrip（缩略图胶片条）+ 波形 + 词标签的按需下钻图"
+            }
+          ]
+        },
+        {
+          "id": "sports-state",
+          "title": "赛事状态层",
+          "tag": "gap",
+          "summary": "比分、时钟、节次与直播回放消歧的状态机",
+          "goal": "现有仓库没有完整实现，需要自研。35 个仓库里只有配置档（profile）级的选片指导，没有任何比分 OCR 时序平滑、比赛时钟状态机、项目专属事件分类体系（本体）或直播—回放关联的代码。",
+          "inputs": [
+            "OCR 时序文本",
+            "镜头表",
+            "声音事件与解说转写"
+          ],
+          "outputs": [
+            "比赛状态时间轴（时钟/节次/比分）",
+            "事件分类体系（本体）的实例",
+            "直播与回放的归组关系"
+          ],
+          "sports": "同一次进球在集锦里出现三次，或开头就泄露最终比分，都是这层缺失的直接后果。",
+          "atomic": [
+            {
+              "name": "比分牌区域标定",
+              "impl": "自研：首次人工或自动定位 ROI",
+              "note": "对整帧做 OCR 找比分不可行，必须先锁定比分牌的固定区域，再高频读取"
+            },
+            {
+              "name": "OCR 时序平滑",
+              "impl": "自研：多帧投票 + 单调约束",
+              "note": "比分只能不减，时钟只能单向走，用约束抑制单帧抖动"
+            },
+            {
+              "name": "事件本体",
+              "impl": "自研：按项目定义 taxonomy 与 detector",
+              "note": "通用的 VLM 画面描述（caption）无法区分普通射门和进球"
+            },
+            {
+              "name": "直播回放消歧",
+              "impl": "自研：慢放检测 + 转场标志 + 状态回退",
+              "note": "比赛时钟停止而画面继续播放，是这段为回放的强信号"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "profile 只给规范不给实现",
+              "detail": "livestream-to-clips 已经写清赛事集锦要求 buildup→decisive play→result→replay/reaction（铺垫→关键球→结果→回放/反应）的节奏，并明确拒绝错误比分、无铺垫的结果和把回放当直播。但这只是 Agent 知识与评测规范，仓库里没有对应的检测器（detector）。",
+              "source": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md:9"
+            },
+            {
+              "title": "通用事件权重不等于赛事理解",
+              "detail": "ClipTalk 的“体育游戏”权重表把 eventValue 提到 0.30、visualIntensity 0.22，但 eventValue 本身仍来自通用 VLM 的判断，没有项目规则支撑，无法回答“这球是不是绝杀”。",
+              "source": "ClipTalk/app/evidence_graph.py:18"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/profile-matrix.md",
+              "line": 9,
+              "why": "赛事配置档（profile）的事件节奏与拒绝条件（仅有规范）"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/evidence_graph.py",
+              "line": 18,
+              "why": "体育游戏内容类型的通用权重，缺项目规则"
+            },
+            {
+              "repo": "ClipTalk",
+              "path": "ClipTalk/app/recognition_pipeline.py",
+              "line": 316,
+              "why": "OCR 只产出通用文本单元，无比分语义"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/skills/livestream-to-clips/references/multimodal-selection.md",
+              "line": 23,
+              "why": "把 UI/scoreboard 列为视觉证据，但不提供检测器（detector）"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

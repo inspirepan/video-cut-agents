@@ -1,0 +1,1329 @@
+{
+  "branches": [
+    {
+      "id": "mg",
+      "title": "MG 动效制作方向",
+      "tag": "mg",
+      "summary": "MG 动效（Motion Graphics，图形动画）从脚本、数据和品牌直接生成画面，可做集锦包装或独立成片。",
+      "goal": "解决没有现成素材也要产出画面的问题：片头、章节卡、金句卡、比分卡和数据动画全部由代码逐帧算出。这个方向与前两条方向的本质区别是生成画面，而不是从素材中选片。",
+      "inputs": [
+        "脚本、逐字稿、数据表与事实层 facts.json",
+        "品牌规范：frame.md / visual-style.md / brand.json / designStyle",
+        "logo、字体、色板 token 与参考片",
+        "集锦 Timeline IR 中 graphics 与 overlay 槽位的需求"
+      ],
+      "outputs": [
+        "合成工程：Remotion composition 或 HyperFrames HTML 文档",
+        "MP4，以及带透明通道的 ProRes 4444 / WebM overlay",
+        "逐帧静帧、contact sheet（多帧缩略拼图）与 lint/check 报告",
+        "可再编辑交付物：workbench 清单、剪映草稿、参数化 props"
+      ],
+      "interview": "访谈集锦会用到金句字卡、说话人身份条（画面下三分之一处的字幕条）和章节卡，卡片跟随词级时间戳出现，落在说话的呼吸间隙。",
+      "sports": "赛事集锦会用到比分卡、球员卡和数据条；pireel 的 varsity-bold 提供现成的体育包装风格。",
+      "mg": "核心主张：画面由 t 或帧号的纯函数算出，必须做到：渲染结果确定、可任意 seek、可逐帧验收、可按配方复用。",
+      "atomic": [
+        {
+          "name": "品牌 token 解析",
+          "impl": "frame.md / visual-style.md / brand.json / designStyle",
+          "note": "这四种格式都是 frontmatter 或 JSON 的字段集合，可以互相映射成一套内部 tokens。"
+        },
+        {
+          "name": "脚本到帧级分镜",
+          "impl": "STORYBOARD.md / scene_plan.json / storyboard.json",
+          "note": "分镜（逐镜头的画面计划）带 status 状态机和事实引用，支持按章节局部重生成。"
+        },
+        {
+          "name": "配方检索与选型",
+          "impl": "hyperframes catalog / video-shotcraft library.json",
+          "note": "先检索现成配方再手写：157 张卡、220 个 components、155 个 blocks 已覆盖大部分常见需求。"
+        },
+        {
+          "name": "确定性合成渲染",
+          "impl": "Remotion render / hyperframes render",
+          "note": "禁止 Date.now、未播种的随机数、渲染时联网和无限循环。"
+        },
+        {
+          "name": "逐帧验收",
+          "impl": "remotion still / hyperframes snapshot / ffmpeg -ss",
+          "note": "抽帧位置必须对准真实的镜头切点，不能按等间隔采样。"
+        },
+        {
+          "name": "回写可编辑工程",
+          "impl": "workbench.ts 清单 / 剪映草稿 / Studio 写回",
+          "note": "把成片拆成 shot/transition/caption/sfx 多条轨道，用户不用回代码也能改。"
+        }
+      ],
+      "pitfalls": [
+        {
+          "title": "静帧冒充动效交付",
+          "detail": "现象：承诺的动效片变成 Ken Burns 幻灯（静态照片缓慢缩放平移）。对策：静帧 fallback、FFmpeg-only 兜底、静默换 runtime 三者都列为硬禁止；motion_led 要求真实动效镜头占比 ≥0.7。",
+          "source": "OpenMontage/AGENT_GUIDE.md:404"
+        },
+        {
+          "title": "预览正常导出全黑",
+          "detail": "现象：MG 在预览和普通浏览器里都正常，本地导出却整块变黑。原因：导出流程走 html-in-canvas，读到的是 paint 阶段的快照，而不是合成器的输出。对策：把导出管线的限制写成硬规则，并且不把预览通过当作导出也会通过的证据。",
+          "source": "OpenChatCut/src/agent/skills/create-motion-graphics/references/canvas-pipeline-rules.md:7"
+        },
+        {
+          "title": "设计规范只写在 prompt 里",
+          "detail": "现象：12 分钟的成片交付时用了系统默认字体，同一个 easing（缓动曲线）用了 934 次，字号有 23 种，217 个字幕 cue 全程一动不动。原因是顺序不是知识：信息在上下文里出现过，不等于能被回读复用。对策：设计系统必须落成有字段的文件，并由 gate 逐文档回读。",
+          "source": "open-edit/pipeline/design/system.ts:3"
+        },
+        {
+          "title": "声音早于画面锁定就开工",
+          "detail": "现象：整张 SFX（音效）表报废，全部重钉。原因：把换 BGM 和画面重做混在同一轮进行，画面随后还在继续改。对策：声音工作永远排在画面锁定之后；钉帧（把音效锚定到具体帧）一律相对镜头起点或拍号来写，不写裸帧号。",
+          "source": "video-shotcraft/references/sound-design.md:36"
+        },
+        {
+          "title": "节奏第一版几乎总是偏快",
+          "detail": "现象：观众看不清。证据：某支片子六次独立反馈全部要求放慢或停留，从未有人嫌太慢。对策：排时间线时预留停留（hold）预算：品牌字标落定后停留 ≥1s，批量动效收尾静止 0.5s，开场主体动作弧 ≥3s。",
+          "source": "video-shotcraft/references/aesthetic-rules.md:33"
+        }
+      ],
+      "refs": [
+        {
+          "repo": "video-shotcraft",
+          "path": "video-shotcraft/SKILL.md",
+          "line": 8,
+          "why": "157 张镜头配方卡，加上已验收模板与八阶段流水线，构成完整的 MG 能力库。"
+        },
+        {
+          "repo": "hyperframes",
+          "path": "hyperframes/README.md",
+          "line": 32,
+          "why": "为 Agent 设计：可 seek 的动画渲染成结果确定的 MP4。"
+        },
+        {
+          "repo": "claude-remotion-skill",
+          "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+          "line": 13,
+          "why": "十条不可协商的规则，专门防止通用 AI 视频的廉价观感。"
+        },
+        {
+          "repo": "open-edit",
+          "path": "open-edit/README.md",
+          "line": 176,
+          "why": "官方自述 V1 主攻字幕，MG、图表与品牌化样式能渲染但打磨不足。"
+        },
+        {
+          "repo": "OpenChatCut",
+          "path": "OpenChatCut/src/editor/designTypes.ts",
+          "line": 1,
+          "why": "designStyle 即品牌规范，驱动 MG 与字幕的配色和字体。"
+        },
+        {
+          "repo": "OpenMontage",
+          "path": "OpenMontage/styles/flat-motion-graphics.yaml",
+          "line": 41,
+          "why": "MG 操作手册（playbook）：spring 参数、停留时长与硬性规则。"
+        },
+        {
+          "repo": "pireel",
+          "path": "pireel/packages/studio-frames/README.md",
+          "line": 40,
+          "why": "Frame 是一套完整可辨识的视听设计系统，不是加了颜色的剪辑技法。"
+        }
+      ],
+      "children": [
+        {
+          "id": "mg-scenarios",
+          "title": "场景与产品定位",
+          "tag": "mg",
+          "summary": "把 MG 动效（Motion Graphics，图形动画）拆成八类交付物，并定义它与集锦工程的接口。",
+          "goal": "先确定做哪一类：片头、章节卡、金句卡、比分卡、人物条、数据动画、产品演示、explainer（讲解型短片）整片。类别不同，引擎、时长档位和验收标准都不同。",
+          "inputs": [
+            "用户诉求或品牌简报",
+            "集锦 Timeline IR 里 graphics/overlay 槽位的需求",
+            "脚本或数据"
+          ],
+          "outputs": [
+            "MG 类别与时长档位",
+            "引擎与路线选择（用现成配方 vs 自己手写）",
+            "与集锦工程的接口约定"
+          ],
+          "interview": "访谈需要说话人身份条（lower-third，画面下三分之一处的字幕条）、金句卡和章节卡。hyperframes 有 11 个 lt-* block 可直接安装。",
+          "sports": "赛事需要比分卡、球员卡和数据条。registry 里没有 scorebug block，只能用 number-wheel 拼出数字。",
+          "mg": "MG 分两种形态：包装层 ≤10s，没有旁白和叙事弧线；独立的 explainer 30–90s，有旁白、章节和结论。",
+          "atomic": [
+            {
+              "name": "类别路由",
+              "impl": "hyperframes /hyperframes 意图层 + /motion-graphics",
+              "note": "先判断要不要检索素材：form 类的 asset_needs 为空时，直接从 plan 跳到 design。"
+            },
+            {
+              "name": "时长档位表",
+              "impl": "clueso stats-infographic-video / kinetic-text-video",
+              "note": "stats 类 30–60s，每场讲一个数字，全片 3–5 个；kinetic-type 类 20–40s，文字是唯一演员。"
+            },
+            {
+              "name": "包装层接口",
+              "impl": "hyperframes talking-head-recut storyboard.json",
+              "note": "卡片携带 startSec/endSec/zone/contentHints，底层视频完整播放。"
+            },
+            {
+              "name": "MG 作为子工程挂载",
+              "impl": "data-composition-src 子合成 / Remotion Composition",
+              "note": "MG 只是集锦时间线上的一个 clip（片段），不是另一个产品。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "把 MG 当装饰不当信息",
+              "detail": "现象：整片是文字卡加淡入，读起来像 PPT。原因：场景只起装饰作用，不表达信息。对策：用 slideshow_risk 的六个维度各打 0–5 分，总分 ≥4.0 判 fail，禁止进入 compose。",
+              "source": "OpenMontage/lib/slideshow_risk.py:16"
+            },
+            {
+              "title": "MG 能力被过度宣称",
+              "detail": "现象：以为 MG 和字幕一样成熟。原因：OpenEdit 自己写明 V1 只针对 captions，motion graphics/charts/brandbook 能渲染但打磨很少。对策：MG 路径必须自带逐帧验收，不能沿用对字幕路径的信心。",
+              "source": "open-edit/README.md:176"
+            },
+            {
+              "title": "短 MG 走了整片流程",
+              "detail": "现象：10s 的字卡也跑了两轮 storyboard 评审。原因：没有按时长分流。对策：motion-graphics workflow 保持自治，最多问一个澄清问题，直接走 plan→design→build→verify。",
+              "source": "hyperframes/skills/motion-graphics/SKILL.md:23"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/motion-graphics/SKILL.md",
+              "line": 41,
+              "why": "把 MG 分成 kinetic-type、stat、charts 等六类"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/talking-head-recut/SKILL.md",
+              "line": 3,
+              "why": "在访谈素材上叠设计卡：lower-third、数据 callout（标注框）、引语、PiP（小窗叠加画面）。"
+            },
+            {
+              "repo": "pireel",
+              "path": "pireel/packages/studio-frames/content/varsity-bold/frame.md",
+              "line": 37,
+              "why": "体育包装的两种形态：叠在画面上的 score bug（比分条）和整屏 stats board。"
+            },
+            {
+              "repo": "clueso-ai-skills",
+              "path": "clueso-ai-skills/skills/stats-infographic-video/SKILL.md",
+              "line": 13,
+              "why": "数据片一场只讲一个数字，选 3–5 个数搭成论证。"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/.agents/skills/hyperframes/PROVENANCE.md",
+              "line": 6,
+              "why": "集锦仓库把 HyperFrames MG skill 锁定版本后内嵌。"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/registry/registry.json",
+              "line": 351,
+              "why": "registry 已有 11 个 lt-* lower-third block"
+            }
+          ]
+        },
+        {
+          "id": "mg-script-storyboard",
+          "title": "脚本到分镜",
+          "tag": "mg",
+          "summary": "把脚本、事实和章节编译成帧级分镜（逐镜头的画面计划），并支持按 chapter 局部重做。",
+          "goal": "让分镜成为可校验、可局部重生成的 artifact，而不是一次性的 prompt 输出。分镜没有 schema 化时，任何一次改动都要全片重来。",
+          "inputs": [
+            "脚本 SCRIPT.md 或 script.schema.json",
+            "facts.json（屏上事实的唯一来源）",
+            "品牌 spec、时长与画幅（画面宽高比）约束"
+          ],
+          "outputs": [
+            "STORYBOARD.md / storyboard.json / scene_plan.json",
+            "帧级时间轴与停留（hold）帧预算",
+            "run-log.jsonl 与 checkpoint_<stage>.json"
+          ],
+          "interview": "访谈分镜的时间基准由 transcript（逐字稿）决定：转场（镜头之间的过渡）只能落在 ≥1.5s 的呼吸间隙或段落结束后 0.3s 内。",
+          "sports": "赛事分镜按事件链排卡片，比分卡必须与真实比分状态对齐，不能由 LLM 现编数字。",
+          "mg": "MG 动效（Motion Graphics，图形动画）没有素材可依，分镜必须自带 status（outline→built→animated）和事实引用，否则无法判断做到哪一步。",
+          "atomic": [
+            {
+              "name": "分镜 schema",
+              "impl": "STORYBOARD.md frontmatter + 每帧 metadata",
+              "note": "帧的字段有 status/src/duration/transition_in/voiceover，未知字段进 extra。"
+            },
+            {
+              "name": "场景状态机",
+              "impl": "outline → built → animated",
+              "note": "sketch 阶段只写线框 HTML 和一条空 timeline，不跑任何 CLI。"
+            },
+            {
+              "name": "章节级局部重做",
+              "impl": "/edit-video <project> <chapter> \"<指令>\"",
+              "note": "chapter 是最小编辑单位；v0 仍是全片重渲，逐章缓存留待后续升级。"
+            },
+            {
+              "name": "语速换算时长",
+              "impl": "words/sec 预算",
+              "note": "toolkit 用 2.5 词/秒；llm-video-maker 用 2.3–2.6 词/秒；中文稿按 280 字/分钟。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "hand-edit 归属只靠 mtime",
+              "detail": "现象：用户手工改过的分镜被下游重跑覆盖。原因：v1 只用 mtime（文件修改时间）判断新旧。对策：重生成严格向下（brief→design→storyboard→render），只有同层或更上层可以覆盖，且必须在报告里写明。",
+              "source": "llm-video-maker/skills/make-video/SKILL.md:66"
+            },
+            {
+              "title": "改时长被当成局部编辑",
+              "detail": "现象：把某一段拉长导致全片时间轴错位。原因：把重生成当成了局部编辑。对策：声明时钟锁定：scene 的 start/end/duration 与 segmentIds 不可移动，改时长一律走重生成。",
+              "source": "llm-video-maker/skills/edit-video/SKILL.md:53"
+            },
+            {
+              "title": "为过审提前渲草稿",
+              "detail": "现象：assets 门禁通过前先渲染一版完整片给用户看。原因：想用成片换取批准。对策：assets 阶段的审阅对象是逐场素材的 filmstrip（缩略图条）；渲染完整草稿等于抢走用户该把的那道门，属于 gate violation。",
+              "source": "OpenMontage/skills/meta/checkpoint-protocol.md:157"
+            },
+            {
+              "title": "屏上文字信息过载",
+              "detail": "现象：一屏放五行字，观众读不完。对策：onScreen 每条文字都带 role，primary 最多 1 条；阅读负荷预算 = primary+secondary+support 的总词数 ≤ 3.5 × 场景秒数。",
+              "source": "llm-video-maker/skills/make-video/SKILL.md:198"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-core/references/storyboard-format.md",
+              "line": 29,
+              "why": "帧字段与 outline/built/animated 状态机"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/SKILL.md",
+              "line": 63,
+              "why": "严格向下的重生成规则与 hand-edit 归属规则。"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/scripts/plan-scenes.mjs",
+              "line": 26,
+              "why": "确定性分场常量：2.5s 下限、9s 上限、1.5s 呼吸间隙"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/schemas/artifacts/scene_plan.schema.json",
+              "line": 20,
+              "why": "九类 scene type 与 shot_language 结构化摄影词汇。"
+            },
+            {
+              "repo": "claude-code-video-toolkit",
+              "path": "claude-code-video-toolkit/lib/project/types.ts",
+              "line": 15,
+              "why": "ProjectPhase 状态机与 Scene/AssetStatus 字段名"
+            },
+            {
+              "repo": "video-agent-skills",
+              "path": "video-agent-skills/video-agent-producer/SKILL.md",
+              "line": 95,
+              "why": "四个人工检查点加一个自动交接包检查（音画时长偏差 ≤15%）"
+            }
+          ]
+        },
+        {
+          "id": "mg-visual-language",
+          "title": "视觉语言与设计系统",
+          "tag": "mg",
+          "summary": "把品牌变成有字段、可校验的设计系统文件，而不是 prompt 里的一段话。",
+          "goal": "MG 动效（Motion Graphics，图形动画）的一致性全靠设计系统。规范只写在 prompt 里，会在几百条工具结果之后失效，必须落成带字段的文件，并由 gate 回读检查。",
+          "inputs": [
+            "产品/品牌视觉：源码 computed styles、官网、Figma、brandbook",
+            "参考片或参考图",
+            "用途、受众与调性"
+          ],
+          "outputs": [
+            "frame.md / visual-style.md / brand.json / design/system.json",
+            "色板、字阶（字号梯度）、字距、间距、动效 tokens",
+            "styleframe 风格静帧与禁用清单"
+          ],
+          "interview": "访谈字卡要长时间停留在屏上且可读，字号与对比度按停留（hold）时长来定，不能用跟随音乐节拍的高能量动效。",
+          "sports": "赛事包装用统一的前倾斜切和单一橙色强调；比分对阵必须分出胜负，不许平局，见 varsity-bold。",
+          "mg": "MG 没有实拍素材托底，视觉全靠设计系统支撑；‘一个 easing（缓动曲线）用了 934 次’这种事故，只有字段化才能拦住。",
+          "atomic": [
+            {
+              "name": "设计系统文件",
+              "impl": "frame.md（优先）→ design.md → DESIGN.md",
+              "note": "frontmatter 是规范层，必须逐字引用 hex/字体/字重；正文只提供判断语境。"
+            },
+            {
+              "name": "字阶与字距",
+              "impl": "ladder Rung{role,px,weight,trackingEm,case}",
+              "note": "字距属于 rung 不属于元素；tracking 偏差 >0.004em 报 tracking-off-rung"
+            },
+            {
+              "name": "动效性格 tokens",
+              "impl": "能量轴 × 调性轴 → 预设表",
+              "note": "专业信赖档：21f/bezier(0,0,0.2,1)/不弹；活力大胆档：18f/过冲（超出再回弹）1.12/squash0.25。"
+            },
+            {
+              "name": "禁用清单",
+              "impl": "mood.avoid / Taboos / 反例词表",
+              "note": "OpenMontage 直接列出 21 个‘懒惰形容词’黑名单（modern、sleek、futuristic…）。"
+            },
+            {
+              "name": "styleframe 先行",
+              "impl": "纯 HTML/CSS 2–3 张 1920×1080 静帧",
+              "note": "先不渲视频、不写 Remotion 代码，就定下色板、字体、材质和信息密度。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "规范只活在 prompt 里",
+              "detail": "现象：12 分钟的成片用了系统默认字体，同一个 easing 用了 934 次，字号有 23 种。原因是顺序不是知识：规范全程可见，却没有落成可回读的字段。对策：先写 design/system.json，再由 gate 逐文档回读。",
+              "source": "open-edit/pipeline/design/system.ts:3"
+            },
+            {
+              "title": "设计系统凭空写在内容之前",
+              "detail": "现象：设计系统里的色板和实际内容对不上。对策：assertGrounded 要求 groundedIn 非空且文件真实存在；原话是‘在内容之前写的系统等于凭空写的系统’。",
+              "source": "open-edit/pipeline/design/system.ts:108"
+            },
+            {
+              "title": "视觉语言另起一套皮肤",
+              "detail": "现象：宣传片的字体配色和产品本身毫无关系。对策：做 styleframe 之前，先从产品的设计系统、源码或 computed styles 里提取字体家族、字号层级、行高字距、栅格、圆角和色板，全片复用或克制地扩展。",
+              "source": "video-shotcraft/SKILL.md:76"
+            },
+            {
+              "title": "要读的字太小",
+              "detail": "现象：字幕在手机小窗里看不见。对策：按最终像素量而不是 fontSize 验收：叙事字幕有效字高 ≥56px（≥5.2% 帧高），辅助文字 ≥32px。文字只有‘纹理’和‘要读’两种状态，读不清宁可删掉。",
+              "source": "video-shotcraft/references/aesthetic-rules.md:103"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-creative/references/design-spec.md",
+              "line": 19,
+              "why": "设计规范优先级与 frontmatter 规范层约定"
+            },
+            {
+              "repo": "pireel",
+              "path": "pireel/packages/studio-frames/README.md",
+              "line": 36,
+              "why": "Skill 管编辑判断、Frame 管视觉表达，两者正交"
+            },
+            {
+              "repo": "pireel",
+              "path": "pireel/packages/studio-frames/content/varsity-bold/frame.md",
+              "line": 7,
+              "why": "赛事 Frame 的 12 个 palette token 与禁忌清单"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/design/system.ts",
+              "line": 53,
+              "why": "DesignSystem 的 ladder/palette/motion 字段"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/.agents/skills/visual-style/references/spec.md",
+              "line": 85,
+              "why": "visual-style.md 的 motion 与 mood.avoid 字段"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/pipeline.md",
+              "line": 91,
+              "why": "用品牌的两个轴推出 easing/时长/过冲/squash 的六行预设表。"
+            }
+          ]
+        },
+        {
+          "id": "mg-component-library",
+          "title": "组件与配方库",
+          "tag": "mg",
+          "summary": "先检索现成配方（调校好的动效模板）再手写动效：卡片给语义，demo 源码给真实参数。",
+          "goal": "手写动效是最后手段。要建立‘检索→选型→读准确源码→填参数→渲染’的固定流程，让 Agent 复用调校过的时值和缓动，而不是每次重新发明。",
+          "inputs": [
+            "功能/信息点清单",
+            "设计系统 tokens",
+            "配方索引：library.json / catalog / registry.json"
+          ],
+          "outputs": [
+            "选中的卡名与变体 style-key",
+            "参数化后的组件 TSX 或 HTML 片段",
+            "typed props 与 schema 声明"
+          ],
+          "interview": "金句卡和说话人条走 lt-* / caption-* 系列；同一支片子里，一种手法只当一次主角。",
+          "sports": "比分和数字用 number-wheel 或 odometer-digit-roll；数字位数 ≤6，再多观众等不起。",
+          "mg": "配方卡是 MG 动效（Motion Graphics，图形动画）的核心资产：157 张卡 / 214 变体 + 220 components + 155 blocks，覆盖率决定手写量。",
+          "atomic": [
+            {
+              "name": "配方检索",
+              "impl": "npx hyperframes catalog --query \"<用大白话说这一拍>\"",
+              "note": "全在本地检索；必须用英文提问，非英文查询抽不出可检索的词，会直接返回空。"
+            },
+            {
+              "name": "配方索引校验",
+              "impl": "gallery/api/library.json 的 name 与 style-key",
+              "note": "先校验卡名和变体，再按卡片文档定位准确的 demo TSX，不能凭卡名猜目录。"
+            },
+            {
+              "name": "组件安装",
+              "impl": "hyperframes add <name>",
+              "note": "block 走 data-composition-src 挂载；component 是代码片段，直接贴进宿主工程。"
+            },
+            {
+              "name": "typed props 契约",
+              "impl": "registry-item.json variables[] / PropSpec",
+              "note": "每个变量有 id/type/role/label/default/options，属性面板据此生成"
+            },
+            {
+              "name": "参数外露",
+              "impl": "DEFAULTS + Partial<typeof DEFAULTS>",
+              "note": "文案、颜色、字号外露成带默认值的 props 并附 schema；缓动、时值、相机键不外露。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "只读卡不读 demo 源码",
+              "detail": "现象：动效形似神不似。原因：配方卡给的是语义和参数表，调校过的缓动、时值配比、遮罩（局部遮挡）揭开时机只在 demo TSX 里。对策：先用 library.json 校验卡名与 style-key，再按卡片上的‘参考实现’定位准确的 TSX。",
+              "source": "video-shotcraft/SKILL.md:117"
+            },
+            {
+              "title": "参数换素材不回验",
+              "detail": "现象：demo 在灰阶占位素材上好看，换成真素材就垮。对策：卡片自己写明‘参数是调校起点而非实战定稿，首次实战必须用真实素材回验’；换文案时字符数要贴近卡片的标定值（如 scramble 的 20 字符）。",
+              "source": "video-shotcraft/references/shots/typography/scramble.md:37"
+            },
+            {
+              "title": "组件里写死 CONFIG 常量",
+              "detail": "现象：交付后用户连一句文案都改不了。原因：demo 顶部的 CONFIG 常量不外露，用户就只能改时间和图层。对策：提取成 DEFAULTS + props + schema，并声明 durationProp 让 clip 时长可以注入。",
+              "source": "video-shotcraft/references/workbench.md:27"
+            },
+            {
+              "title": "复用了别人的成品外观",
+              "detail": "现象：每支片子长得都一样。对策：atelier 模式下，stock scene-type 目录、registry block、fixtures 和成品组件一律禁用：只复用引擎知识，绝不复用创意组件。",
+              "source": "OpenMontage/AGENT_GUIDE.md:139"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/gallery/api/library.json",
+              "line": 1,
+              "why": "157 张卡 / 214 变体的索引，含 duration 与 energy"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/shots/data/odometer-digit-roll.md",
+              "line": 26,
+              "why": "逐位 20+i×7f 起停、16f 减速、过冲半格再 6f 回弹的完整参数表"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/demos/README.md",
+              "line": 46,
+              "why": "demo 由归一化 t 驱动、逐帧结果确定，并 export DURATION。"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/registry/components/number-wheel/registry-item.json",
+              "line": 1,
+              "why": "registry-item.json 的 typed props 变量结构"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-registry/SKILL.md",
+              "line": 55,
+              "why": "block 靠 data-composition-src 挂进宿主时间线"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-cli/SKILL.md",
+              "line": 18,
+              "why": "先 catalog 检索再手写：搜效果不搜机制"
+            }
+          ]
+        },
+        {
+          "id": "mg-engines",
+          "title": "合成引擎对比",
+          "tag": "decision",
+          "summary": "按确定性、任意 seek、透明通道（alpha）、字体、许可证五个维度选渲染后端。",
+          "goal": "MG 动效（Motion Graphics，图形动画）的渲染后端不是三选一，而是分工。选错的代价是整套组件资产不可迁移，所以要先定维度再定引擎。",
+          "inputs": [
+            "MG 类别与时长",
+            "是否需要透明通道 / 任意 seek / 批量参数化",
+            "商用与许可证约束"
+          ],
+          "outputs": [
+            "引擎选型与理由（写进 decision log）",
+            "渲染参数与并发策略"
+          ],
+          "interview": "访谈包装大多是叠加层，优先选能输出透明通道、且能与底片（底层原视频）精确对时的引擎。",
+          "sports": "赛事要批量产出同模板、不同数据的卡片，优先选数据驱动加参数化渲染的引擎。",
+          "mg": "选型必须显式记录：OpenMontage 把‘静默换 runtime’定为 CRITICAL 级治理违规；两个 runtime 都可用时，必须都摆出来给用户选。",
+          "atomic": [
+            {
+              "name": "对比维度",
+              "impl": "确定性 / 任意 seek / 字体 / 透明通道 / 速度 / 并发 / 数据驱动 / 许可证",
+              "note": "维度先于引擎；每个维度都要能被一条命令或一份文档证实"
+            },
+            {
+              "name": "三后端分工",
+              "impl": "FFmpeg / Remotion / HyperFrames",
+              "note": "FFmpeg 管剪辑与 mux（音视频封装）；Remotion 管组件化数据驱动；HyperFrames 管透明 overlay（叠加层）。"
+            },
+            {
+              "name": "runtime 选择留痕",
+              "impl": "edit_decisions.render_runtime + decision_log",
+              "note": "render_runtime 在 proposal 阶段锁定，enum 只有三个取值。"
+            },
+            {
+              "name": "编译目标可替换",
+              "impl": "Timeline IR → compiler → 各后端",
+              "note": "编辑工程格式必须高于渲染器，换后端不应改变用户的剪辑工程"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "静默换渲染后端",
+              "detail": "现象：动效交付变成 Ken Burns 幻灯（静态照片缓慢缩放平移）。对策：静帧兜底、FFmpeg-only 兜底、静默换 runtime 三者都是硬禁止；motion_led 要求真实动效占比 ≥0.7。",
+              "source": "OpenMontage/AGENT_GUIDE.md:404"
+            },
+            {
+              "title": "只呈现一个候选 runtime",
+              "detail": "现象：决策日志里只考虑了一个后端。对策：两个 runtime 都可用时必须同时呈现给用户，decision log 必须记录 options_considered；只记一个属于 CRITICAL 级 reviewer finding。",
+              "source": "OpenMontage/AGENT_GUIDE.md:123"
+            },
+            {
+              "title": "按宣传的速度选型",
+              "detail": "现象：以为闭源渲染器一定更快。对策：OpenEdit 自己标注过，2.2× 的对比是内部初步测量，尚不能在 VEED 之外复现，方法论未发布。",
+              "source": "open-edit/README.md:132"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/README.md",
+              "line": 32,
+              "why": "Agent 的 plan/lint/preview/render 环路"
+            },
+            {
+              "repo": "remotion",
+              "path": "remotion/LICENSE.md",
+              "line": 41,
+              "why": "Company License 门槛，是选型的法务前置条件"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/schemas/artifacts/edit_decisions.schema.json",
+              "line": 201,
+              "why": "render_runtime enum 与 proposal 阶段锁定规则"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/AGENT_GUIDE.md",
+              "line": 383,
+              "why": "FFmpeg / Remotion / HyperFrames 三后端对照表"
+            },
+            {
+              "repo": "research",
+              "path": "research/video-editing-agent-deep-dive-v2.md",
+              "line": 288,
+              "why": "三后端分工表：编辑工程格式必须高于渲染器"
+            }
+          ],
+          "children": [
+            {
+              "id": "mg-engine-remotion",
+              "title": "Remotion 路线",
+              "tag": "mg",
+              "summary": "React 组件逐帧渲染，Studio 可回写代码，许可证按公司规模分级。",
+              "goal": "确定 Remotion 适合什么：数据驱动的组件化 MG 动效（Motion Graphics，图形动画）、复杂多层合成、需要 Player 预览或批量参数化出片的场景。",
+              "inputs": [
+                "theme.ts 主题对象",
+                "inputProps 参数",
+                "public/ 下的素材"
+              ],
+              "outputs": [
+                "MP4（h264 crf 16–17）",
+                "带透明通道的 ProRes 4444 或 WebM",
+                "npx remotion still 静帧"
+              ],
+              "mg": "所有动画都由 useCurrentFrame() 驱动；CSS 动画和 Tailwind 动画类不会被正确渲染，必须重写。",
+              "atomic": [
+                {
+                  "name": "渲染命令",
+                  "impl": "npx remotion render src/index.ts <CompId> out.mp4 --codec h264 --crf 17",
+                  "note": "重渲必须带 --overwrite，否则会去读旧文件。"
+                },
+                {
+                  "name": "透明通道",
+                  "impl": "--image-format=png --pixel-format=yuva444p10le --codec=prores --prores-profile=4444",
+                  "note": "也可用 WebM；可在 calculateMetadata 里设为合成默认导出参数"
+                },
+                {
+                  "name": "字体加载",
+                  "impl": "@remotion/google-fonts loadFont()",
+                  "note": "类型安全，且自动阻塞渲染直到字体就绪；hero（主视觉大字）文字禁止依赖系统默认字体。"
+                },
+                {
+                  "name": "Studio 可交互",
+                  "impl": "Interactive.Div + 内联 style + 独立 transform 属性",
+                  "note": "样式必须是纯内联对象：常量引用、对象展开、数学运算都会让值在 Studio 里变灰不可编辑。"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "许可证按公司规模分级",
+                  "detail": "个人、≤3 名员工的营利组织、非营利组织可免费商用；超过即需要 Company License。禁止为了售卖、出租、再授权自己的 Remotion 衍生版而复制或修改其代码。选型时必须先过法务。",
+                  "source": "remotion/LICENSE.md:21"
+                },
+                {
+                  "title": "em 间距按父级字号解析",
+                  "detail": "现象：大字号之间的 gap 明显偏小。原因：flex 容器里 gap/margin 用 em 时，按父元素的 font-size（常为 16px）解析，而不是文字本身的字号。对策：大字块之间一律用 px。",
+                  "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:94"
+                },
+                {
+                  "title": "Chromium 二进制找不到",
+                  "detail": "现象：沙箱或离线 CI 里渲染失败。对策：用 --browser-executable 指向已有的 Chromium；报 Old Headless mode has been removed 时改用 headless_shell。",
+                  "source": "claude-remotion-skill/remotion-motion-graphics/SKILL.md:74"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "remotion",
+                  "path": "remotion/LICENSE.md",
+                  "line": 21,
+                  "why": "Free License 资格：个人、≤3 员工营利组织、非营利组织"
+                },
+                {
+                  "repo": "remotion-dev-skills",
+                  "path": "remotion-dev-skills/skills/remotion-best-practices/remotion-markup/REFERENCE.md",
+                  "line": 21,
+                  "why": "CSS 动画与 Tailwind 动画类不会正确渲染"
+                },
+                {
+                  "repo": "remotion-dev-skills",
+                  "path": "remotion-dev-skills/skills/remotion-best-practices/remotion-render/transparent-videos.md",
+                  "line": 18,
+                  "why": "透明 ProRes 4444 与 WebM 的完整参数"
+                },
+                {
+                  "repo": "remotion-dev-skills",
+                  "path": "remotion-dev-skills/skills/remotion-best-practices/remotion-interactivity/REFERENCE.md",
+                  "line": 62,
+                  "why": "内联样式才能让 Studio 反向编辑关键帧"
+                }
+              ]
+            },
+            {
+              "id": "mg-engine-hyperframes",
+              "title": "HyperFrames 路线",
+              "tag": "mg",
+              "summary": "用 HTML/CSS/GSAP 写动效，任意 seek 下渲染结果确定，自带 lint。",
+              "goal": "确定 HyperFrames 适合什么：网页与产品动效、kinetic type（动态文字）、透明 overlay（叠加层）、需要 seek-safe 与本地 lint 的场景。",
+              "inputs": [
+                "index.html 合成 + data-* 时间属性",
+                "compositions/ 下的 block 与 component",
+                "assets/ 与 .media/ 素材"
+              ],
+              "outputs": [
+                "MP4 / WebM / MOV overlay",
+                "snapshot contact sheet（多帧缩略拼图）",
+                "check 报告（lint+runtime+layout+motion+contrast）"
+              ],
+              "mg": "渲染器只认时间：每帧都是一次全新的 seek，没有‘播放’的概念；任何依赖前一帧累积的状态都会失步。",
+              "atomic": [
+                {
+                  "name": "开发环路",
+                  "impl": "init → catalog → 编写 → lint → check → preview --background → render",
+                  "note": "check 会先跑 lint；validate/inspect/layout 只是兼容别名，新指令不得再用"
+                },
+                {
+                  "name": "时间线契约",
+                  "impl": "每个合成恰好一条 gsap.timeline({paused:true})",
+                  "note": "注册到 window.__timelines[id]；渲染长度取 root 的 data-duration"
+                },
+                {
+                  "name": "确定性禁令",
+                  "impl": "禁 Date.now/performance.now/未播种 Math.random/网络请求/输入态/repeat:-1",
+                  "note": "循环次数用 Math.floor(duration/cycle)-1，用 floor 不用 ceil"
+                },
+                {
+                  "name": "非 GSAP 时长推断",
+                  "impl": "CSS/WAAPI/Lottie 可推断，Three.js 不可",
+                  "note": "无限迭代或用 Three.js 时 root 必须写 data-duration，否则 lint 报错"
+                },
+                {
+                  "name": "文字测量",
+                  "impl": "window.__hyperframes.pretext / fitTextFontSize",
+                  "note": "在 canvas 上离屏测量，避免每帧回流；clearCache/setLocale 故意不暴露，以免跨合成串状态。"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "lint 报错会关掉后续审计",
+                  "detail": "现象：check 报告 0 sample(s) 和 0/0 text checks，看起来很干净，其实什么都没跑。原因：一个 lint error 会同时关掉布局与对比度审计。对策：先清空 lint error 再看这些数字。",
+                  "source": "hyperframes/skills/hyperframes-core/SKILL.md:66"
+                },
+                {
+                  "title": "root 没给尺寸导致内容坍缩",
+                  "detail": "现象：内容全堆在左上角。原因：root 没有显式像素盒，或祖先链高度未解析，height:100% 的子元素被压成 0。对策：给 root 显式 width/height，并用 snapshot 肉眼确认。",
+                  "source": "hyperframes/skills/hyperframes-core/SKILL.md:44"
+                },
+                {
+                  "title": "异步里提前注册空 timeline",
+                  "detail": "现象：整段渲染空白。原因：在 fonts.ready 回调里提前注册了 key，空 timeline 被当成已就绪。对策：赋值放到回调末尾；lint 规则 gsap_timeline_registered_before_async_build。",
+                  "source": "hyperframes/skills/hyperframes-core/references/determinism-rules.md:13"
+                },
+                {
+                  "title": "媒体属性三个硬错",
+                  "detail": "现象：预览黑或渲染静音。对策：video/audio 禁写 crossorigin；video[data-start] 的祖先不得也带 data-start；每个 audio 必须有 id，否则 mixer 不收，渲染无声。",
+                  "source": "hyperframes/skills/hyperframes-core/SKILL.md:62"
+                },
+                {
+                  "title": "CSS 初始值与 tween 打架",
+                  "detail": "现象：入场起点跳变。原因：CSS 初始 transform 与 GSAP tween 同属性互相打架。对策：改用 gsap.fromTo 设起点，lint 报 gsap_css_transform_conflict。",
+                  "source": "hyperframes/skills/hyperframes-core/SKILL.md:61"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "hyperframes",
+                  "path": "hyperframes/README.md",
+                  "line": 32,
+                  "why": "可 seek 动画 → 确定性 MP4，为 Agent 而建"
+                },
+                {
+                  "repo": "hyperframes",
+                  "path": "hyperframes/skills/hyperframes-core/references/determinism-rules.md",
+                  "line": 33,
+                  "why": "确定性禁令清单与每帧全新 seek 的原理"
+                },
+                {
+                  "repo": "hyperframes",
+                  "path": "hyperframes/skills/hyperframes-cli/SKILL.md",
+                  "line": 14,
+                  "why": "init/lint/check/preview/render 九步开发环路"
+                },
+                {
+                  "repo": "hyperframes",
+                  "path": "hyperframes/skills/hyperframes-animation/SKILL.md",
+                  "line": 74,
+                  "why": "位置常量须 setup 期算好，禁 tween 时读 rect"
+                }
+              ]
+            },
+            {
+              "id": "mg-engine-others",
+              "title": "其他引擎与取舍",
+              "tag": "mg",
+              "summary": "三条备选路线：闭源渲染器、代码即工程、截帧法各有边界。",
+              "goal": "给出除 Remotion/HyperFrames 之外的三条路线的真实约束，避免按宣传选型。",
+              "inputs": [
+                "合成文档（.wv / JSX / HTML）"
+              ],
+              "outputs": [
+                "MP4",
+                "结构化检查报告"
+              ],
+              "mg": "三条路线的共同差异在于‘工程真相存在哪里’：CSS 文档、JSX 源码，还是一堆 PNG 帧。",
+              "atomic": [
+                {
+                  "name": "OpenEdit .wv",
+                  "impl": "HTML 片段 + <style>，无 JS",
+                  "note": "@keyframes + animation + animation-delay 就是时间线；不是私有时间线格式"
+                },
+                {
+                  "name": "Diffusion Studio",
+                  "impl": "SolidJS JSX → 编译 → 挂进 ECS",
+                  "note": "画布上拖动会写回源码 prop，靠元素 id 定位；id 是六位 base36，编译期剥离，不进运行时。"
+                },
+                {
+                  "name": "framecraft",
+                  "impl": "HTML + Playwright 逐帧截图 + FFmpeg",
+                  "note": "1920×1080 视口、DPR 1、导航后只等 300ms 字体；按墙钟（真实流逝时间）截图，不是确定性步进。"
+                },
+                {
+                  "name": "dapi CLI",
+                  "impl": "media probe/grab/filmstrip/waveform/transcribe/listen、capture、check",
+                  "note": "单条记录输出 JSON，集合输出 JSON Lines；除 fonts/fetch 外都要求 app 在运行。"
+                }
+              ],
+              "pitfalls": [
+                {
+                  "title": "闭源渲染器的许可与平台限制",
+                  "detail": "编辑器是 Apache-2.0，渲染器二进制走 PolyForm Shield 1.0.0：产出的视频可商用且不付费，但不得做与 VEED 竞争的产品。只发布 macOS-arm64 与 windows-x64。",
+                  "source": "open-edit/README.md:185"
+                },
+                {
+                  "title": "引擎能力表必须由探针决定",
+                  "detail": "现象：文档里写的限制其实是猜的，直接砍掉了真实能力。对策：OpenEdit 规定每条引擎限制都要有 control-render 探针加像素 diff 作证；这一节一旦漂回‘凭记忆断言’，测试会 fail build。",
+                  "source": "open-edit/pipeline/director-brief.md:188"
+                },
+                {
+                  "title": "截帧法的时序会漂",
+                  "detail": "现象：动画节奏与标称 fps 对不上。原因：用 screenshot + wait_for_timeout 按墙钟时间推进，单张截图 30–50ms，1080p 下约 2–3 倍实时。对策：只用于时序不敏感的演示片。",
+                  "source": "framecraft/LEARNINGS.md:79"
+                },
+                {
+                  "title": "字体等待时间自相矛盾",
+                  "detail": "现象：第 0 帧字体没加载完。原因：LEARNINGS 写明要等 500ms（Google Fonts @import 需 200–500ms），代码里却只等了 300ms。对策：自建管线时把字体就绪当成显式条件，不用固定睡眠。",
+                  "source": "framecraft/framecraft.py:369"
+                }
+              ],
+              "refs": [
+                {
+                  "repo": "open-edit",
+                  "path": "open-edit/pipeline/director-brief.md",
+                  "line": 9,
+                  "why": ".wv 是 CSS 扩展，@keyframes 即时间线"
+                },
+                {
+                  "repo": "open-edit",
+                  "path": "open-edit/README.md",
+                  "line": 129,
+                  "why": "不用 headless 浏览器；2.2× 提速尚不可复现"
+                },
+                {
+                  "repo": "editor",
+                  "path": "editor/reference/jsx/module.md",
+                  "line": 38,
+                  "why": "每个元素带 id 并写回源码，六位 base36，是画布写回的定位锚"
+                },
+                {
+                  "repo": "editor",
+                  "path": "editor/packages/runtime/src/index.ts",
+                  "line": 1,
+                  "why": "运行时是无 DOM 无 Solid 的 koota world"
+                },
+                {
+                  "repo": "framecraft",
+                  "path": "framecraft/framecraft.py",
+                  "line": 360,
+                  "why": "逐帧 screenshot + wait_for_timeout 推进"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "mg-audio",
+          "title": "对齐节拍的配音与声音设计",
+          "tag": "mg",
+          "summary": "先测出节拍网格再排分镜，SFX（音效）相对镜头起点钉帧（锚定到具体帧）并补两项偏移。",
+          "goal": "MG 动效（Motion Graphics，图形动画）一半的观感来自声音。强节奏片必须先验收节拍网格，再排分镜（逐镜头画面计划）；配音片必须让画面时长跟着实际音频走，而不是反过来。",
+          "inputs": [
+            "BGM 音频",
+            "旁白脚本或已录配音",
+            "分镜表与镜头边界"
+          ],
+          "outputs": [
+            "beat_data.json（bpm/t0/beats/hits/rms/sections）",
+            "SFX 钉帧表 {from, src, volume}",
+            "带 BGM 与无 BGM 两版成片"
+          ],
+          "interview": "访谈字卡跟着语音走：用词级时间戳对齐，转场（镜头之间的过渡）落在 ≥1.5s 的呼吸间隙里。",
+          "sports": "赛事集锦常用强鼓点 BGM，切点锚定拍号；但作用于全画面的冲击效果全片 ≤3 处。",
+          "mg": "动效关键帧可以直接写成 beatF(n)，换曲时只改两个常量即可全片重排。",
+          "atomic": [
+            {
+              "name": "拍子网格拟合",
+              "impl": "librosa beat_track + 最小二乘等距拟合",
+              "note": "不要直接信 beat_track 给出的 tempo 标量；残差 ≤±15ms 才算机器鼓点。"
+            },
+            {
+              "name": "鼓点三分类",
+              "impl": "kick 40–160Hz / snare 150–500Hz+1–3kHz / hihat 6–14kHz",
+              "note": "kick（底鼓）驱动冲击、snare（军鼓）驱动换镜、hihat（踩镲）决定微动密度。"
+            },
+            {
+              "name": "网格验收指标",
+              "impl": "match ≥98% / mean_abs_ms <10ms / drift <5ms / 首拍有效",
+              "note": "先验收再排分镜；以指标定夺，不以听感定夺。"
+            },
+            {
+              "name": "拍号写时间线",
+              "impl": "beatF(n) = round((SOURCE_BEAT0 + OUTPUT_AUDIO_OFFSET_SEC + n*BEAT_INT)*FPS)",
+              "note": "源分析值永远不改，渲染偏移单独记账。"
+            },
+            {
+              "name": "配音语速控制",
+              "impl": "pacing.py atempo 保调变速",
+              "note": "WARN_FAST 170 / WARN_SLOW 110 wpm；MIN_ATEMPO 0.85，超过就有可听伪影"
+            },
+            {
+              "name": "双版本交付",
+              "impl": "bgm 布尔 inputProp",
+              "note": "同一条时间线渲带 BGM 和无 BGM（保留 SFX）两版，方便用户后期自配音乐。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "逐拍打全画面",
+              "detail": "现象：用户反馈‘镜头随节奏抖动，影响观感’。原因：把 kick 命中表当成触发器，每一拍都让全画面泵动。对策：命中表只是候选池；作用于整画面或相机层的冲击全片 ≤3 处、相邻间隔 ≥16 拍，其余拍点只动元素层。",
+              "source": "video-shotcraft/references/aesthetic-rules.md:38"
+            },
+            {
+              "title": "音画对齐少补两项偏移",
+              "detail": "现象：最重的一击晚了 0.27s。原因：音源峰值滞后与输出音轨偏移叠加在一起。对策：Sequence.from = 目标峰值帧 − 音源峰值滞后帧 − 输出音轨偏移帧，浮点运算到最后一步再取整。",
+              "source": "video-shotcraft/references/sound-design.md:288"
+            },
+            {
+              "title": "SFX 钉绝对帧号",
+              "detail": "现象：改一个镜头的时长，后面所有音效全部失效。对策：钉帧一律写成 SHOTS.<shot>.from + offset，需要对齐节拍的片子写 beatF(n)，新项目起手就用相对钉帧。",
+              "source": "video-shotcraft/references/sound-design.md:282"
+            },
+            {
+              "title": "克隆音色语速修不动",
+              "detail": "现象：反复重录仍然是 170–210 wpm。原因：克隆音色会继承参考音频的语速，temperature 改不了。对策：参考音频录 12–25s、语速正常的多样句子，并用 --max-wpm 165 做确定性变速兜底。",
+              "source": "claude-code-video-toolkit/tools/pacing.py:3"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/music-beat-sync.md",
+              "line": 114,
+              "why": "网格验收四指标与 beat_data.json 产物字段"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/sound-design.md",
+              "line": 20,
+              "why": "BGM 音量 0.34、1s 淡入 1.7s 淡出、SFX 声明式钉帧表"
+            },
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/references/design-rules.md",
+              "line": 48,
+              "why": "音效比画面早落 2–3 帧；framesPerBeat = fps*60/BPM"
+            },
+            {
+              "repo": "claude-code-video-toolkit",
+              "path": "claude-code-video-toolkit/tools/pacing.py",
+              "line": 30,
+              "why": "WARN_FAST_WPM 170 与 MIN_ATEMPO 0.85"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-audio/SKILL.md",
+              "line": 1,
+              "why": "voiceover carve、效果链与自动化包络"
+            }
+          ]
+        },
+        {
+          "id": "mg-assets",
+          "title": "素材生成与来源",
+          "tag": "mg",
+          "summary": "素材必须冻结到项目本地，并附带 license 旁车文件（sidecar），渲染时不许联网。",
+          "goal": "MG 动效（Motion Graphics，图形动画）的素材大多是生成或检索而来，来源和授权最容易失控。要让每个素材都有可追溯的 sidecar 文件，并在渲染时完全离线。",
+          "inputs": [
+            "asset_needs 检索计划",
+            "生成模型 key（可选）",
+            "品牌 logo 与字体"
+          ],
+          "outputs": [
+            "assets/ 冻结文件 + .credit.json / .media/manifest.jsonl",
+            "assets/index.md 可读清单",
+            "asset_manifest（含 prompt/seed/model/cost/license）"
+          ],
+          "interview": "访谈画面大多用真人素材，MG 侧只补图标、底纹和说话人头像框，生成量小。",
+          "sports": "赛事需要队徽、球员照和实时数据，版权风险最高，必须逐条记录 license 和来源。",
+          "mg": "纯 code/text 类别（kinetic-type、多数 charts/stat）的 asset_needs 为空，直接跳过素材阶段。",
+          "atomic": [
+            {
+              "name": "素材解析一个动词",
+              "impl": "media-use resolve",
+              "note": "检索→生成→抓取，产出冻结的本地路径和 ledger 记录；.media/manifest.jsonl 是机器真值。"
+            },
+            {
+              "name": "license 旁车",
+              "impl": "每个素材一个 .credit.json（provider/source URL/license）",
+              "note": "web 类素材缺 license 或 source 会被脚本直接拒绝。"
+            },
+            {
+              "name": "跨项目复用",
+              "impl": "~/.media/ 内容寻址缓存（SHA-256）",
+              "note": "prompt 命中即自动复用，misses.jsonl 记录未命中意图"
+            },
+            {
+              "name": "图像生成锁 prompt 骨架",
+              "impl": "固定光照与色板词，只换主体，按最终画幅生成",
+              "note": "同一批素材必须共用 image_prompt_prefix 与 negative prompt"
+            },
+            {
+              "name": "配方冻结",
+              "impl": "recipe.mjs freeze --name <name>",
+              "note": "把 frame.md、storyboard 骨架和 brief 值一起冻结成可复用的 bundle。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "渲染时才去取素材",
+              "detail": "现象：渲染结果不可复现。对策：硬性规定渲染时不联网，所有素材都 vendoring 到 projects/<id>/assets/ 下；素材授权随项目一起走。",
+              "source": "llm-video-maker/skills/make-video/SKILL.md:399"
+            },
+            {
+              "title": "链式生成漂向动漫风",
+              "detail": "现象：连续生成 5–10 个场景后画风跑偏。原因：LTX-2 约 30% 训练数据被污染，泛化的 prompt 会被吸过去。对策：用 --prompts-file 逐镜头写 prompt，加 negative prompt 并带强风格锚。",
+              "source": "claude-code-video-toolkit/skills/openclaw-video-toolkit/SKILL.md:408"
+            },
+            {
+              "title": "生成尺寸不合网格静默出错",
+              "detail": "现象：画面比例不对却没有报错。对策：宽高必须是 16 的倍数（SadTalker）或 64 的倍数（LTX-2）；上游没有任何校验，越界会静默向下取整并渲错。",
+              "source": "claude-code-video-toolkit/CLAUDE.md:376"
+            },
+            {
+              "title": "素材方向错拖到逐镜头才暴露",
+              "detail": "现象：整套场景报废。对策：最终素材必须依据已定案的分镜采集；styleframe 阶段可以先用少量安全的预检素材，但逐镜头实现开始前，素材方向必须已经锁定。",
+              "source": "video-shotcraft/references/pipeline.md:38"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/media-use/references/memory.md",
+              "line": 29,
+              "why": ".media/manifest.jsonl 是机器真值"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/scripts/fetch-assets.mjs",
+              "line": 270,
+              "why": "web 类素材缺 license/source 直接抛错拒绝"
+            },
+            {
+              "repo": "llm-video-maker",
+              "path": "llm-video-maker/skills/make-video/SKILL.md",
+              "line": 263,
+              "why": "十类素材来源表与 CC0 过滤、平台 ToS 与开源许可的区分"
+            },
+            {
+              "repo": "OpenMontage",
+              "path": "OpenMontage/schemas/artifacts/asset_manifest.schema.json",
+              "line": 24,
+              "why": "prompt/seed/model/license 等可复现字段"
+            },
+            {
+              "repo": "claude-code-video-toolkit",
+              "path": "claude-code-video-toolkit/skills/openclaw-video-toolkit/SKILL.md",
+              "line": 349,
+              "why": "LTX-2 单片 ~8s 上限、宽高须被 64 整除、约 30% 训练数据伪影"
+            }
+          ]
+        },
+        {
+          "id": "mg-frame-qa",
+          "title": "逐帧验收与 lint",
+          "tag": "mg",
+          "summary": "渲染完必须抽帧看图；lint 和静态门禁都看不见文字重叠、发糊和多层堆叠。",
+          "goal": "MG 动效（Motion Graphics，图形动画）的缺陷大多是视觉类，自动门禁抓不到。要把‘渲染→抽帧→肉眼看→修→重渲’做成不可跳过的闭环，并配上机械可查的 lint。",
+          "inputs": [
+            "渲染成片与静帧",
+            "设计系统与卡片的已知坑清单",
+            "拍点/切点时刻表"
+          ],
+          "outputs": [
+            "逐帧静帧与 contact sheet（多帧缩略拼图）",
+            "lint / check / verify 报告",
+            "对照审美准则的自检报告（编号 ✓/✗ 位置）"
+          ],
+          "interview": "访谈字卡要抽帧确认它落在说话人脸之外的负空间（留白区域）上，不遮挡人物。",
+          "sports": "赛事比分卡要逐帧核对数字与真实比分一致，滚动中途不能出现假数字。",
+          "mg": "同一帧渲染两次必须像素一致：动画全部由归一化 t 或帧号的纯函数算出，没有真随机。",
+          "atomic": [
+            {
+              "name": "静帧抽样",
+              "impl": "npx remotion still --frame N --overwrite / hyperframes snapshot --at t1,t2",
+              "note": "有 ffmpeg 时再从成片 -ss 抽一遍，可同时验证编码环节"
+            },
+            {
+              "name": "采样点选择",
+              "impl": "钉真实切点而非等间隔",
+              "note": "等间隔采样几乎必然错过切点：某次采样取在 1.2/3.8/9.5s，而切点在 1.83/5.29/8.58s，无一接近。"
+            },
+            {
+              "name": "机械 lint",
+              "impl": "hyperframes lint / open-edit lint-template / pireel block-lint",
+              "note": "规则可枚举：opacity-owned-twice、starts-after-end 等"
+            },
+            {
+              "name": "分析式校验",
+              "impl": "veed-engine-cli --verify",
+              "note": "离屏重放时间线，与真实 draw list 比对，报告 bounds/never-visible/occluded。"
+            },
+            {
+              "name": "确定性回归",
+              "impl": "同一帧多次渲染 diff",
+              "note": "shotcraft demo 全部由 useT() 归一化 t 驱动、无真随机，可作为确定性基线"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "预览通过不等于导出通过",
+              "detail": "现象：预览正常，本地导出整块 MG 全黑。原因：导出取的是 paint 阶段的快照，而不是合成器的输出。对策：SVG 只允许最外层的 g 带 transform，内层禁用 transform 与 opacity，把 alpha 烘进颜色串。",
+              "source": "OpenChatCut/src/agent/skills/create-motion-graphics/references/canvas-pipeline-rules.md:7"
+            },
+            {
+              "title": "verify 通过仍然堆字",
+              "detail": "现象：语音密集时，两三层文字结构叠在同一个锚点上，读不出来。原因：--verify 看的是 draw list，堆叠、字形融合、浅底浅字、字母降部被裁它全都看不见。对策：每拍抽中点和结束前约 120ms 两帧人工检查，至少覆盖两种文案。",
+              "source": "open-edit/docs/recipe-format.md:135"
+            },
+            {
+              "title": "字体在渲染环境静默回退",
+              "detail": "现象：导出后中文字体回退成了默认字体栈。对策：不依赖 PingFang SC、Microsoft YaHei、system-ui 等本地字体，查到规范字体名后逐字使用；点名你的字体家族的警告才是真的。",
+              "source": "OpenChatCut/src/agent/skills/create-motion-graphics/SKILL.md:127"
+            },
+            {
+              "title": "用自动相似度指标打质量分",
+              "detail": "现象：指标给出自信的错误结论。原因：两个自动指标，一个把有明显眼部缺陷的版本排第一，一个在画面彻底崩坏时仍然平稳。对策：用清晰度随时间变化的曲线加 contact sheet，或直接人工看。",
+              "source": "claude-code-video-toolkit/CLAUDE.md:390"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "claude-remotion-skill",
+              "path": "claude-remotion-skill/remotion-motion-graphics/SKILL.md",
+              "line": 30,
+              "why": "第 10 条铁律：渲染、抽帧、真的看、修、重渲，禁止交付未验证成片"
+            },
+            {
+              "repo": "hyperframes",
+              "path": "hyperframes/skills/hyperframes-core/SKILL.md",
+              "line": 66,
+              "why": "lint 报错会关掉布局与对比度审计，0 findings 可能什么都没跑"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/pipeline/scripts/lint-template.ts",
+              "line": 195,
+              "why": "opacity-owned-twice 等 9 条可枚举 lint 规则与严重级"
+            },
+            {
+              "repo": "open-edit",
+              "path": "open-edit/docs/recipe-format.md",
+              "line": 135,
+              "why": "--verify 必要但不充分，视觉缺陷类必须逐帧肉眼看"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/final-review.md",
+              "line": 1,
+              "why": "独立终检 Agent 必须干净上下文，缺输入就标'无法验证'"
+            },
+            {
+              "repo": "framecraft",
+              "path": "framecraft/framecraft.py",
+              "line": 1007,
+              "why": "机械项：>10KB、≥1280×720、有音轨、blackdetect"
+            }
+          ]
+        },
+        {
+          "id": "mg-agent-protocol",
+          "title": "Agent 编辑协议",
+          "tag": "mg",
+          "summary": "定义工程真相（唯一可信源）在哪里、Agent 能改什么，以及创意与确定性两条路径如何分流。",
+          "goal": "MG 动效（Motion Graphics，图形动画）工程要能被 Agent 反复编辑而不失控。要确定谁是真相（代码还是 IR）、哪些层锁定，以及什么时候走配方零 token 路径、什么时候允许自撰（自己手写）。",
+          "inputs": [
+            "现有 MG 工程与设计系统",
+            "用户的修改指令",
+            "配方索引与运行时索引"
+          ],
+          "outputs": [
+            "强 schema 的编辑提案与 decision log",
+            "断点存档（checkpoint）与审批留痕",
+            "可再编辑的交付物（workbench 清单 / 剪映草稿）"
+          ],
+          "interview": "访谈成片改动最多的是文案和停留时长，这两项必须做成可视化可调，不用回代码。",
+          "sports": "赛事用同一模板批量出卡，走配方确定性路径最省；只有开场包装才值得自撰。",
+          "mg": "默认路径应是零 token 的配方渲染；只有用户带来参考、品牌或概念时才进自撰路径。",
+          "atomic": [
+            {
+              "name": "两条路径分流",
+              "impl": "recipe=yes 走脚本零 token；recipe=no 走 inline 自撰",
+              "note": "自撰路径必须先写 design/system.json，再写任何文档，并由 design-gate 回读。"
+            },
+            {
+              "name": "代码即工程",
+              "impl": "Diffusion Studio JSX ↔ 画布双向写回",
+              "note": "元素 id 是写回的定位锚；babel 合成出来的元素没有 id，画布上的改动写不回去。"
+            },
+            {
+              "name": "IR 即工程",
+              "impl": "Timeline IR 的 graphics/overlay 槽 + composition 作为 clip",
+              "note": "只暴露 read_project / propose_edit / apply_proposal，不给任意 patch"
+            },
+            {
+              "name": "交付后可视化微调",
+              "impl": "workbench 三层可编辑度",
+              "note": "要求组件是 useCurrentFrame 纯函数，tween 全部 clamp，无随机。"
+            },
+            {
+              "name": "审批门禁",
+              "impl": "checkpoint_<stage>.json + human_approved",
+              "note": "status=completed 但未获批会直接抛 GATE VIOLATION；批准是逐门的，早先的放权不覆盖后续的门。"
+            }
+          ],
+          "pitfalls": [
+            {
+              "title": "批量出卡没有代表作确认",
+              "detail": "现象：一次生成十张 MG 卡片，全部风格跑偏。对策：只有文字方向时，只能先做一张代表作，放上时间线渲出合成帧，停下来等确认；只有已激活的 Design Style、选定的预设或已认可的代表作才允许批量。",
+              "source": "OpenChatCut/src/agent/skills/create-motion-graphics/SKILL.md:41"
+            },
+            {
+              "title": "章节编辑外溢到别的章节",
+              "detail": "现象：改第三章时顺手动了第一章。对策：声明其他章节的 scene、色板与字体保持字节级不变，字幕层锁定不动；‘为了改 ch3 而不得不动 ch1’就是 bug。",
+              "source": "llm-video-maker/skills/edit-video/SKILL.md:61"
+            },
+            {
+              "title": "设计阶段该不该看画面有分歧",
+              "detail": "现象：两套仓库给出了相反的规则。OpenEdit 禁止设计 pass 读帧，只能通过 analysis.json 拿数字；OpenChatCut 要求先看目标帧再写 JSX。对策：底片（底层原视频）存在时看帧，纯生成时看数字，并把这条规则写死在协议里。",
+              "source": "OpenChatCut/src/agent/skills/create-motion-graphics/SKILL.md:232"
+            },
+            {
+              "title": "交付格式单向不可回读",
+              "detail": "现象：剪映草稿被用户改过之后无法反向同步。对策：剪映打开明文草稿后会升级成加密保存，属于单向转换；要改只能改导出脚本后重装（幂等覆盖），不要试图读回。",
+              "source": "video-shotcraft/references/jianying-export.md:16"
+            }
+          ],
+          "refs": [
+            {
+              "repo": "open-edit",
+              "path": "open-edit/docs/FLOW.md",
+              "line": 17,
+              "why": "自撰运行先写 design/system.json；编译好的配方本身就是系统"
+            },
+            {
+              "repo": "editor",
+              "path": "editor/README.md",
+              "line": 58,
+              "why": "SolidJS 模块即文档真相，画布与代码双向编辑"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/editor/projectTypes.ts",
+              "line": 16,
+              "why": "designStyle 挂在 ProjectDoc 上，全工程共享"
+            },
+            {
+              "repo": "OpenChatCut",
+              "path": "OpenChatCut/src/agent/tools/schemas/mg-code-tools.ts",
+              "line": 8,
+              "why": "一次调用必须给出完整 JSX，且不自动上时间线"
+            },
+            {
+              "repo": "video-shotcraft",
+              "path": "video-shotcraft/references/workbench.md",
+              "line": 43,
+              "why": "WORKBENCH 清单的多轨结构与 schema 声明"
+            },
+            {
+              "repo": "remotion-dev-skills",
+              "path": "remotion-dev-skills/skills/remotion-best-practices/remotion-interactivity/REFERENCE.md",
+              "line": 9,
+              "why": "markup 写法决定 Studio 能否选中、拖拽与写回关键帧"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
