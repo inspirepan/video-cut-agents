@@ -70,6 +70,10 @@
 	path = hyperframes
 	url = https://github.com/heygen-com/hyperframes
 	branch = main
+[submodule "hypit"]
+	path = hypit
+	url = https://github.com/hypit-ai/hypit
+	branch = main
 [submodule "kajisho5-ffmpeg-skill"]
 	path = kajisho5-ffmpeg-skill
 	url = https://github.com/kajisho5/ffmpeg-skill
